@@ -29,7 +29,7 @@
 void server_msg_cb(struct bufferevent *bev, void *arg) {
     char msg[1024];
     int len = bufferevent_read(bev, msg, sizeof(msg));
-    printf("Recv %d bytes messsage from server:\n %s\n", len, msg);
+    printf("Recv %d bytes messsage from server:\n%s\n", len, msg);
     SSL *ssl = bufferevent_openssl_get_ssl(bev);
     // int state = SSL_get_shutdown(ssl);
     // if (state == 0) SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
@@ -61,14 +61,9 @@ void event_cb(struct bufferevent *bev, short event, void *arg) {
 int main()
 {
     // build the message to be sent
-    int length = 800; // the size of message
-    char* mesg = (char*)malloc((length+1)*sizeof(char)); // Look out the end mark '/0' of a C string
-    if (mesg == NULL)
-        exit(1);
-    int i;
-    for (i=0; i<length; i++) 
-        strcat(mesg, "a");
- 
+    char *mesg = "ABCDEFGabcdefg";
+    int length = strlen(mesg);
+
     SSL_library_init();
     OpenSSL_add_all_algorithms();
     SSL_load_error_strings();
@@ -94,7 +89,6 @@ int main()
     evutil_socket_t fd;
     fd = socket(AF_INET, SOCK_STREAM, 0);
     struct bufferevent* conn = bufferevent_openssl_socket_new(base, fd, ssl, BUFFEREVENT_SSL_CONNECTING, BEV_OPT_CLOSE_ON_FREE);
-    // struct bufferevent* conn = bufferevent_socket_new(base, fd, BEV_OPT_CLOSE_ON_FREE|BEV_OPT_DEFER_CALLBACKS);
     int enable = 1;
     // if(setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (void*)&enable, sizeof(enable)) < 0)
     //    printf("ERROR: TCP_NODELAY SETTING ERROR!\n");
@@ -113,7 +107,6 @@ int main()
  
     event_base_dispatch(base);
     
-    free(mesg);
     mesg = NULL;
  
     bufferevent_free(conn);

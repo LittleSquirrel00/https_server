@@ -1,3 +1,10 @@
+/************************************
+ * server.c
+ * 使用libevent框架，实现HTTPS/HTTP服务器
+ * 2019-11-15
+ * 作者：张枫、李雪菲、赵挽涛
+************************************/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,64 +27,129 @@
 #include <event2/bufferevent_ssl.h>
 #include <event2/thread.h>
 
-static void
-echo_read_cb(struct bufferevent *bev, void *ctx)
-{
-    struct evbuffer *in = bufferevent_get_input(bev);
+/** OpenSSL初始化程序
+ *  实现：
+ *      初始化SSL库、加密算法、错误消息
+ *      生成服务器ctx
+ *      加载并校验证书和密钥  
+ *  参数：
+ *      char *cert_file: 证书的路径
+ *      char *priv_file: 密钥的路径
+ *  返回值：
+ *      服务器ctx
+ */
+static SSL_CTX* Init_OpenSSL(char *cert_file, char *priv_file);
 
-    printf("Received %zu bytes\n", evbuffer_get_length(in));
-    printf("----- data ----\n");
-    printf("%.*s\n", (int)evbuffer_get_length(in), evbuffer_pullup(in, -1));
+/** timer回调函数
+ *  实现：
+ *      TODO: 定时清理HTTPS连接池中过期连接
+ */
+static void timer_cb(int fd, short event, void *arg);
 
-    bufferevent_write_buffer(bev, in);
-}
+/** listener回调函数
+ *  实现：
+ *      接受TCP连接
+ *      生成SSL，与客户端建立SSL连接
+ *      创建libevent，利用libevent处理消息
+ *  TODO: 同时支持SSL加密和未加密
+ *  TODO: HTTPS连接池
+ *  TODO: 单连接、持久连接、停等协议、管道
+ */
+static void accept_conn_cb(struct evconnlistener *listener, evutil_socket_t fd, struct sockaddr *addr, int socklen, void *ctx);
 
-static void
-echo_write_cb(struct bufferevent *bev, void *ctx)
-{
-    /* This callback is invoked when there is data to read on bev. */
-    struct evbuffer *input = bufferevent_get_input(bev);
-    struct evbuffer *output = bufferevent_get_output(bev);
-    printf("write\n");
-    /* Copy all the data from the input buffer to the output buffer. */
-    evbuffer_add_buffer(output, input);
-}
+/** listener的事件回调函数
+ *  实现：
+ *     处理监听器意外事件，断开连接，释放事件资源，终止服务运行
+ */
+static void accept_error_cb(struct evconnlistener *listener, void *ctx);
 
-void echo_event_cb(struct bufferevent *bev, short events, void *ctx)
-{
-    if (events & BEV_EVENT_ERROR)
-            perror("Error from bufferevent");
-    if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
-            bufferevent_free(bev);
+/** bufferevent的读回调函数
+ *  实现：  
+ *      从读缓冲区读HTTP报文
+ *      TODO: 解析HTTP请求报文
+ *      TODO: 生成HTTP应答报文
+ *      将HTTP应答报文写入写缓冲区
+ */
+static void read_cb(struct bufferevent *bev, void *ctx);
+
+/** bufferevent的事件回调函数
+ *  实现：
+ *     处理缓冲区意外事件，断开连接，释放事件资源
+ */
+static void event_cb(struct bufferevent *bev, short events, void *ctx);
+
+/** TODO: 实现HTTP解析
+ *  参数：
+ *      char *msg: SSL解码后的消息字符串
+ *      char **buf: HTTP处理后返回的消息字符串，可进行分块，实现分块传输
+ *  返回值：
+ *      int： 0 表示HTTP处理成功；1 表示HTTP处理失败
+ *  TODO: HTTP状态码
+ *  TODO: GET、POST报文解析，应答报文
+ *  TODO: 上传、下载文件
+ */
+int HTTP_Parser(char *msg, char **buf);
+
+/// TODO: 线程池
+/// TODO: HTTPS连接池
+int main(int argc, char **argv) {
+    struct event_base *base;
+    struct evconnlistener *listener;
+    struct sockaddr_in sin;
+
+    int port = argc > 1 ? atoi(argv[1]) : 8088;
+    if (port<=0 || port>65535) {
+        puts("Invalid port");
+        return 1;
     }
+
+    // 初始化openssl
+    char *cert = argc > 2 ? argv[2] : "cacert.pem";
+    char *priv = argc > 3 ? argv[3] : "private_key.pem";
+    SSL_CTX *ctx = Init_OpenSSL(cert, priv);
+
+    // 设置地址sockaddr
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;           // This is an INET address
+    sin.sin_addr.s_addr = htonl(0);     // Listen on 0.0.0.0
+    sin.sin_port = htons(port);         // Listen on the given port.
+
+    // 创建事件循环
+    base = event_base_new();
+    if (!base) {
+        puts("Couldn't open event base");
+        return 1;
+    }
+
+    // 创建listener
+    listener = evconnlistener_new_bind(base, accept_conn_cb, (void *)ctx,
+        LEV_OPT_CLOSE_ON_FREE|LEV_OPT_REUSEABLE, -1, (struct sockaddr*)&sin, sizeof(sin));
+    if (!listener) {
+        perror("Couldn't create listener");
+        return 1;
+    }
+    evconnlistener_set_error_cb(listener, accept_error_cb);
+    printf("Listen to %s:%d\n", inet_ntoa(sin.sin_addr), ntohs(sin.sin_port));
+
+    // 创建定时器
+    struct event *timer = event_new(base, -1, EV_TIMEOUT|EV_PERSIST, timer_cb, NULL);
+    struct timeval tv;
+    evutil_timerclear(&tv);
+    tv.tv_sec = 1;    
+    evtimer_add(timer, &tv);
+
+    // 开始执行事件循环、检测事件, 运行服务器
+    event_base_dispatch(base);
+
+    // 结束服务，释放资源
+    evconnlistener_free(listener);
+    event_base_free(base);
+    SSL_CTX_free(ctx);
+
+    return 0;
 }
 
-void accept_conn_cb(struct evconnlistener *listener, evutil_socket_t fd, struct sockaddr *addr, int socklen, void *ctx)
-{
-    printf("Got a new connection!\n");
-    SSL_CTX *server_ctx = (SSL_CTX *)ctx;
-    SSL *client_ctx = SSL_new(server_ctx);
-    /* We got a new connection! Set up a bufferevent for it. */
-    struct event_base *base = evconnlistener_get_base(listener);
-    // struct bufferevent *bev = bufferevent_socket_new(base, fd, BEV_OPT_CLOSE_ON_FREE);
-    struct bufferevent *bev = bufferevent_openssl_socket_new(base, fd, client_ctx, BUFFEREVENT_SSL_ACCEPTING, BEV_OPT_CLOSE_ON_FREE);
-
-    bufferevent_setcb(bev, echo_read_cb, NULL, echo_event_cb, NULL);
-    bufferevent_enable(bev, EV_READ|EV_WRITE);
-}
-
-void accept_error_cb(struct evconnlistener *listener, void *ctx)
-{
-    struct event_base *base = evconnlistener_get_base(listener);
-    int err = EVUTIL_SOCKET_ERROR();
-    fprintf(stderr, "Got an error %d (%s) on the listener. Shutting down.\n", 
-        err, evutil_socket_error_to_string(err));
-    event_base_loopexit(base, NULL);
-}
-
-
-SSL_CTX* Init_OpenSSL(char *cert_file, char *priv_file) {
-    printf("Set up certifate, init openssl\n");
+static SSL_CTX* Init_OpenSSL(char *cert_file, char *priv_file) {
     SSL_CTX *ctx;
     SSL_library_init();
     OpenSSL_add_all_algorithms();
@@ -89,58 +161,62 @@ SSL_CTX* Init_OpenSSL(char *cert_file, char *priv_file) {
         ERR_print_errors_fp(stdout);
         exit(1);
     }
-    printf("openssl ok\n");
+    printf("Set up openssl ok!\nLoaded certificate:%s\nLoaded private key:%s\n", cert_file, priv_file);
     return ctx;
 }
 
-int main(int argc, char **argv)
-{
-    char cert[] = "cacert.pem";
-    char priv[] = "private_key.pem";
-    SSL_CTX *ctx = Init_OpenSSL(cert, priv);
+static void timer_cb(evutil_socket_t fd, short events, void *arg) {
+    // printf("current time:, there are n connections\n");
+}
 
-    struct event_base *base;
-    struct evconnlistener *listener;
-    struct sockaddr_in sin;
+static void accept_conn_cb(struct evconnlistener *listener, evutil_socket_t fd, struct sockaddr *addr, int socklen, void *ctx) {
+    struct sockaddr_in *sock = (struct sockaddr_in *)addr;
+    printf("Got a new connection from %s:%d!\n", inet_ntoa(sock->sin_addr), ntohs(sock->sin_port));
 
-    int port = 8088;
+    SSL_CTX *server_ctx = (SSL_CTX *)ctx;
+    SSL *client_ssl = SSL_new(server_ctx);
 
-    if (argc > 1) {
-            port = atoi(argv[1]);
+    struct event_base *base = evconnlistener_get_base(listener);
+    struct bufferevent *bev = bufferevent_openssl_socket_new(base, fd, client_ssl, BUFFEREVENT_SSL_ACCEPTING, BEV_OPT_CLOSE_ON_FREE);
+    // bufferevent_openssl_set_allow_dirty_shutdown(bev, 1);
+
+    bufferevent_setcb(bev, read_cb, NULL, event_cb, NULL);
+    bufferevent_enable(bev, EV_READ|EV_WRITE);
+}
+
+static void accept_error_cb(struct evconnlistener *listener, void *ctx) {
+    struct event_base *base = evconnlistener_get_base(listener);
+    int err = EVUTIL_SOCKET_ERROR();
+    fprintf(stderr, "Got an error %d (%s) on the listener. Shutting down.\n", 
+        err, evutil_socket_error_to_string(err));
+    event_base_loopexit(base, NULL);
+}
+
+static void read_cb(struct bufferevent *bev, void *ctx) {
+    struct evbuffer *in = bufferevent_get_input(bev);
+
+    printf("Received %zu bytes\n", evbuffer_get_length(in));
+    printf("----- data ----\n");
+    printf("%.*s\n", (int)evbuffer_get_length(in), evbuffer_pullup(in, -1));
+
+    // char buf[128][1024];
+    // memset(buf, 0, sizeof(buf));
+    // if (HTTP_Parser(evbuffer_pullup(in, -1), buf));
+    // for (int i = 0; i < 128 && strlen(buf[i]) > 0; i++) {
+    //     bufferevent_write_buffer(bev, buf[i]);
+    // }
+
+    bufferevent_write_buffer(bev, in);
+}
+
+static void event_cb(struct bufferevent *bev, short events, void *ctx) {
+    if (events & BEV_EVENT_ERROR)
+        perror("Error from bufferevent");
+    if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
+        bufferevent_free(bev);
     }
-    if (port<=0 || port>65535) {
-            puts("Invalid port");
-            return 1;
-    }
+}
 
-    base = event_base_new();
-    if (!base) {
-            puts("Couldn't open event base");
-            return 1;
-    }
+int HTTP_Parser(char *msg, char **buf) {
 
-    /* Clear the sockaddr before using it, in case there are extra
-        * platform-specific fields that can mess us up. */
-    memset(&sin, 0, sizeof(sin));
-    /* This is an INET address */
-    sin.sin_family = AF_INET;
-    /* Listen on 0.0.0.0 */
-    sin.sin_addr.s_addr = htonl(0);
-    /* Listen on the given port. */
-    sin.sin_port = htons(port);
-
-    listener = evconnlistener_new_bind(base, accept_conn_cb, (void *)ctx,
-        LEV_OPT_CLOSE_ON_FREE|LEV_OPT_REUSEABLE, -1, (struct sockaddr*)&sin, sizeof(sin));
-    if (!listener) {
-            perror("Couldn't create listener");
-            return 1;
-    }
-    evconnlistener_set_error_cb(listener, accept_error_cb);
-    event_base_dispatch(base);
-
-    evconnlistener_free(listener);
-    event_base_free(base);    
-    SSL_CTX_free(ctx);
-
-    return 0;
 }
