@@ -27,6 +27,14 @@
 #include <event2/bufferevent_ssl.h>
 #include <event2/thread.h>
 
+// 分块传输控制块
+struct Chunk_Data {
+    struct bufferevent *bev;
+    char **chunk_data;
+    struct event *timer;
+    int i;
+};
+
 /** OpenSSL初始化程序
  *  实现：
  *      初始化SSL库、加密算法、错误消息
@@ -58,6 +66,11 @@ static void accept_conn_cb(struct evconnlistener *listener, evutil_socket_t fd, 
  */
 static void accept_error_cb(struct evconnlistener *listener, void *ctx);
 
+/** 利用定时器事件进行分块传输
+ *
+ */
+static void chunk_timer_cb(evutil_socket_t fd, short events, void *arg);
+
 /** bufferevent的读回调函数
  *  实现：
  *      从读缓冲区读HTTP报文
@@ -71,8 +84,8 @@ static void read_cb(struct bufferevent *bev, void *ctx);
 
 /** bufferevent的事件回调函数
  *  实现：
- *      事件类型：BEV_EVENT_EOF,BEV_EVENT_ERROR,BEV_EVENT_TIMEOUT,BEV_EVENT_CONNECTED
- *      读写事件：BEV_EVENT_READING,BEV_EVENT_WRITING
+ *      事件类型：BEV_EVENT_EOF:4,BEV_EVENT_ERROR:5,BEV_EVENT_TIMEOUT:6,BEV_EVENT_CONNECTED:7
+ *      读写事件：BEV_EVENT_READING:0,BEV_EVENT_WRITING:1
  *      CONNECTED事件表示成功建立连接
  *      其他事件断开连接，释放事件资源
  */
@@ -187,6 +200,21 @@ static void accept_error_cb(struct evconnlistener *listener, void *ctx) {
     event_base_loopexit(base, NULL);
 }
 
+static void chunk_timer_cb(evutil_socket_t fd, short events, void *arg) {
+    struct Chunk_Data *chunk = (struct Chunk_Data *)arg;
+    struct evbuffer *evb = evbuffer_new();
+    /// TODO:判断条件
+    if (chunk->i < sizeof(chunk->chunk_data)) {
+        evbuffer_add_printf(evb, "%s", chunk->chunk_data[chunk->i]);
+        bufferevent_write_buffer(chunk->bev, evb);
+        evbuffer_free(evb);
+    }
+    struct timeval *tv = (struct timeval *)malloc(sizeof(struct timeval));
+    evutil_timerclear(tv);
+    tv->tv_sec = 1;
+    evtimer_add(chunk->timer, tv);
+}
+
 static void read_cb(struct bufferevent *bev, void *ctx) {
     struct evbuffer *in = bufferevent_get_input(bev);
 
@@ -194,18 +222,39 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
     printf("----- data ----\n");
     printf("%.*s\n", (int)evbuffer_get_length(in), evbuffer_pullup(in, -1));
 
-    sleep(5);
+    // sleep(0.1);
+
     int keep_alive = 1, conn_close = 0;
     int chunk = 0;
     int pipeline = 0;
-    // char buf[128][1024];
+
+    // char *buf = (char *)malloc(1024*sizeof(char));
     // memset(buf, 0, sizeof(buf));
     // if (HTTP_Parser(evbuffer_pullup(in, -1), buf));
     // for (int i = 0; i < 128 && strlen(buf[i]) > 0; i++) {
     //     bufferevent_write_buffer(bev, buf[i]);
     // }
 
-    bufferevent_write_buffer(bev, in);
+    // 添加定时器事件实现分块传输
+    if (keep_alive && chunk) {
+        struct Chunk_Data *chunk = (struct Chunk_Data *)malloc(sizeof(struct Chunk_Data));
+        struct event_base *base = bufferevent_get_base(bev);
+        struct event *chunk_timer = event_new(base, -1, EV_TIMEOUT, chunk_timer_cb, chunk);
+        chunk->chunk_data;
+        chunk->bev = bev;
+        chunk->timer = chunk_timer;
+        chunk->i = 0;
+        struct timeval *tv = (struct timeval *)malloc(sizeof(struct timeval));
+        evutil_timerclear(tv);
+        tv->tv_sec = 1;
+        evtimer_add(chunk_timer, tv);
+    }
+    else {
+        struct evbuffer *out = evbuffer_new();
+        bufferevent_write_buffer(bev, in);
+    }
+
+    // 持久连接
     if (!keep_alive || conn_close) bufferevent_free(bev);
 }
 
@@ -213,10 +262,12 @@ static void event_cb(struct bufferevent *bev, short events, void *ctx) {
     if (events & BEV_EVENT_ERROR)
         perror("Error from bufferevent");
     if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR | BEV_EVENT_TIMEOUT)) {
+        if (BEV_EVENT_TIMEOUT) printf("timeout");
+        if (BEV_EVENT_EOF) printf("eof");
+        if (BEV_EVENT_ERROR) printf("error");
         bufferevent_free(bev);
     }
 }
 
 int HTTP_Parser(char *msg, char **buf) {
-
 }

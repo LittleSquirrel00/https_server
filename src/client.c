@@ -29,7 +29,7 @@
 enum MsgType {GET, POST, UPLOAD, DOWNLOAD}; // 请求报文类型
 
 /** bufferevent读回调函数，处理服务器返回的消息
- *  TODO: 与服务器保持连接，服务器管道，停等协议回复
+ *  TODO: 服务器管道
  *  TODO: 上下文相关（分块传输合并），多次交互
  */
 void server_msg_cb(struct bufferevent *bev, void *arg);
@@ -82,6 +82,10 @@ int main()
     my_address.sin_addr.s_addr = htonl(0x7f000001); // 127.0.0.1
     my_address.sin_port = htons(port);
 
+    struct timeval tv;
+    evutil_timerclear(&tv);
+    tv.tv_sec = 2;
+
     // 创建事件循环和写入事件
     struct event_base* base = event_base_new();
     evutil_socket_t fd;
@@ -89,7 +93,8 @@ int main()
     struct bufferevent* conn = bufferevent_openssl_socket_new(base, fd, ssl, BUFFEREVENT_SSL_CONNECTING, BEV_OPT_CLOSE_ON_FREE);
     bufferevent_setcb(conn, server_msg_cb, NULL, event_cb, NULL);
     bufferevent_enable(conn, EV_WRITE|EV_READ);
-    // bufferevent_openssl_set_allow_dirty_shutdown(conn, 1);
+    // bufferevent_set_timeouts(conn, &tv, NULL);
+    bufferevent_openssl_set_allow_dirty_shutdown(conn, 1);
     if(bufferevent_socket_connect(conn,(struct sockaddr*)&my_address,sizeof(my_address)) == 0)
         printf("connect success\n");
  
@@ -135,18 +140,20 @@ char *CreateMsg(enum MsgType msgType, char *uri) {
     return msg;
 }
 
-void event_cb(struct bufferevent *bev, short event, void *arg) {
-    if (event & BEV_EVENT_EOF) {
-        printf("Connection closed.\n");
-    }
-    else if (event & BEV_EVENT_ERROR) {
-        printf("Some other error.\n");
-    }
-    else if (event & BEV_EVENT_CONNECTED) {
+void event_cb(struct bufferevent *bev, short events, void *arg) {
+    if (events & BEV_EVENT_CONNECTED) {
         printf("Client has successfully cliented.\n");
         return;
     }
-    
+    if (events & BEV_EVENT_EOF) {
+        printf("Connection closed.\n");
+    }
+    else if (events & BEV_EVENT_ERROR) {
+        printf("Some other error.\n");
+    }
+    else if (events & BEV_EVENT_TIMEOUT) {
+        printf("Connection timeout.\n");
+    }
     struct event *ev = (struct event *)arg;
     bufferevent_free(bev);
     event_free(ev);
@@ -158,17 +165,21 @@ void server_msg_cb(struct bufferevent *bev, void *arg) {
     msg[len] = '\0';
     printf("Recv %d bytes messsage from server:\n%s\n", len, msg);
     
-    bufferevent_free(bev);
+    // bufferevent_free(bev);
     // struct event_base *base = bufferevent_get_base(bev);
     // event_base_loopexit(base, NULL);
 }
 
 static void timer_cb(evutil_socket_t fd, short events, void *arg) {
-    // struct event_base *base = (struct event_base *)arg;
     struct bufferevent *conn = (struct bufferevent *)arg;
     char mesg[1024];
     memset(mesg, 0, sizeof(mesg));
     sprintf(mesg, "%x", events);
-    printf("send message: %s\n", mesg);
+
+    struct evbuffer* output = bufferevent_get_output(conn);
+    int len = 0;
+    len = evbuffer_get_length(output);
+    printf("output buffer has %d bytes left\n", len);
+
     bufferevent_write(conn, mesg, strlen(mesg));
 }
