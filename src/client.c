@@ -1,10 +1,10 @@
 /************************************
- * For msmr 
- * server.c
- * tesing the speed of bufferevent_write
- * 2015-02-03
- * author@tom
+ * client.c
+ * HTTPS客户端，对HTTPS服务器进行测试
+ * 2019-11-15
+ * 作者：张枫、李雪菲、赵挽涛
 ************************************/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,17 +53,16 @@ void event_cb(struct bufferevent *bev, short event, void *arg);
  */
 char *CreateMsg(enum MsgType msgType, char *uri);
 
+static void timer_cb(evutil_socket_t fd, short events, void *arg);
+
 /**
  *  TODO:HTTP请求报文
  *  TODO:HTTP持久连接，保持连接
- *  TODO:HTTP多次交互，
+ *  TODO:HTTP多次交互
+ *  TODO:浏览器测试
  */
 int main()
 {
-    // 构建消息
-    char *mesg = CreateMsg(GET, NULL);
-    int length = strlen(mesg);
-
     // 初始化OpenSSL
     SSL_library_init();
     OpenSSL_add_all_algorithms();
@@ -82,7 +81,7 @@ int main()
     my_address.sin_family = AF_INET;
     my_address.sin_addr.s_addr = htonl(0x7f000001); // 127.0.0.1
     my_address.sin_port = htons(port);
- 
+
     // 创建事件循环和写入事件
     struct event_base* base = event_base_new();
     evutil_socket_t fd;
@@ -90,18 +89,27 @@ int main()
     struct bufferevent* conn = bufferevent_openssl_socket_new(base, fd, ssl, BUFFEREVENT_SSL_CONNECTING, BEV_OPT_CLOSE_ON_FREE);
     bufferevent_setcb(conn, server_msg_cb, NULL, event_cb, NULL);
     bufferevent_enable(conn, EV_WRITE|EV_READ);
+    // bufferevent_openssl_set_allow_dirty_shutdown(conn, 1);
     if(bufferevent_socket_connect(conn,(struct sockaddr*)&my_address,sizeof(my_address)) == 0)
         printf("connect success\n");
  
     // 将数据写入缓冲区
-    bufferevent_write(conn, mesg, length);
-    
-    // 检测写入缓冲区数据
-    struct evbuffer* output = bufferevent_get_output(conn);
-    int len = 0;
-    len = evbuffer_get_length(output);
-    printf("output buffer has %d bytes left\n", len);
+    char *mesg = CreateMsg(GET, NULL);
+    bufferevent_write(conn, mesg, strlen(mesg));
+
+    // // 检测写入缓冲区数据
+    // struct evbuffer* output = bufferevent_get_output(conn);
+    // int len = 0;
+    // len = evbuffer_get_length(output);
+    // printf("output buffer has %d bytes left\n", len);
  
+    // 定时器
+    struct event *timer = event_new(base, -1, EV_TIMEOUT|EV_PERSIST, timer_cb, conn);
+    struct timeval tv2;
+    evutil_timerclear(&tv2);
+    tv2.tv_sec = 1;    
+    evtimer_add(timer, &tv2);
+
     // 开始执行
     event_base_dispatch(base);
  
@@ -109,7 +117,7 @@ int main()
     bufferevent_free(conn);
     event_base_free(base);
     SSL_CTX_free(ctx);
-    // printf("Client program is over\n");
+    printf("Client program is over\n");
     
     return 0;
 }
@@ -147,11 +155,20 @@ void event_cb(struct bufferevent *bev, short event, void *arg) {
 void server_msg_cb(struct bufferevent *bev, void *arg) {
     char msg[1024];
     int len = bufferevent_read(bev, msg, sizeof(msg));
+    msg[len] = '\0';
     printf("Recv %d bytes messsage from server:\n%s\n", len, msg);
-    SSL *ssl = bufferevent_openssl_get_ssl(bev);
-    // int state = SSL_get_shutdown(ssl);
-    // if (state == 0) SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
-    SSL_shutdown(ssl);
-    struct event_base *base = bufferevent_get_base(bev);
-    event_base_loopexit(base, NULL);
+    
+    bufferevent_free(bev);
+    // struct event_base *base = bufferevent_get_base(bev);
+    // event_base_loopexit(base, NULL);
+}
+
+static void timer_cb(evutil_socket_t fd, short events, void *arg) {
+    // struct event_base *base = (struct event_base *)arg;
+    struct bufferevent *conn = (struct bufferevent *)arg;
+    char mesg[1024];
+    memset(mesg, 0, sizeof(mesg));
+    sprintf(mesg, "%x", events);
+    printf("send message: %s\n", mesg);
+    bufferevent_write(conn, mesg, strlen(mesg));
 }

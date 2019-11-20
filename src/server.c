@@ -40,20 +40,15 @@
  */
 static SSL_CTX* Init_OpenSSL(char *cert_file, char *priv_file);
 
-/** timer回调函数
- *  实现：
- *      TODO: 定时清理HTTPS连接池中过期连接
- */
-static void timer_cb(int fd, short event, void *arg);
-
 /** listener回调函数
  *  实现：
  *      接受TCP连接
  *      生成SSL，与客户端建立SSL连接
  *      创建libevent，利用libevent处理消息
+ *      设置libevent读、写、事件回调函数和超时
+ *      默认长连接、非管道化
  *  TODO: 同时支持SSL加密和未加密
- *  TODO: HTTPS连接池
- *  TODO: 单连接、持久连接、停等协议、管道
+ *  TODO: 管道
  */
 static void accept_conn_cb(struct evconnlistener *listener, evutil_socket_t fd, struct sockaddr *addr, int socklen, void *ctx);
 
@@ -64,17 +59,22 @@ static void accept_conn_cb(struct evconnlistener *listener, evutil_socket_t fd, 
 static void accept_error_cb(struct evconnlistener *listener, void *ctx);
 
 /** bufferevent的读回调函数
- *  实现：  
+ *  实现：
  *      从读缓冲区读HTTP报文
  *      TODO: 解析HTTP请求报文
  *      TODO: 生成HTTP应答报文
+ *      TODO: 分块传输/管道
  *      将HTTP应答报文写入写缓冲区
+ *      是否使用长连接，KEEP-ALIVE为2s(超时断开连接)，短连接直接断开连接释放资源
  */
 static void read_cb(struct bufferevent *bev, void *ctx);
 
 /** bufferevent的事件回调函数
  *  实现：
- *     处理缓冲区意外事件，断开连接，释放事件资源
+ *      事件类型：BEV_EVENT_EOF,BEV_EVENT_ERROR,BEV_EVENT_TIMEOUT,BEV_EVENT_CONNECTED
+ *      读写事件：BEV_EVENT_READING,BEV_EVENT_WRITING
+ *      CONNECTED事件表示成功建立连接
+ *      其他事件断开连接，释放事件资源
  */
 static void event_cb(struct bufferevent *bev, short events, void *ctx);
 
@@ -91,7 +91,6 @@ static void event_cb(struct bufferevent *bev, short events, void *ctx);
 int HTTP_Parser(char *msg, char **buf);
 
 /// TODO: 线程池
-/// TODO: HTTPS连接池
 int main(int argc, char **argv) {
     struct event_base *base;
     struct evconnlistener *listener;
@@ -131,13 +130,6 @@ int main(int argc, char **argv) {
     evconnlistener_set_error_cb(listener, accept_error_cb);
     printf("Listen to %s:%d\n", inet_ntoa(sin.sin_addr), ntohs(sin.sin_port));
 
-    // 创建定时器
-    struct event *timer = event_new(base, -1, EV_TIMEOUT|EV_PERSIST, timer_cb, NULL);
-    struct timeval tv;
-    evutil_timerclear(&tv);
-    tv.tv_sec = 1;    
-    evtimer_add(timer, &tv);
-
     // 开始执行事件循环、检测事件, 运行服务器
     event_base_dispatch(base);
 
@@ -165,23 +157,26 @@ static SSL_CTX* Init_OpenSSL(char *cert_file, char *priv_file) {
     return ctx;
 }
 
-static void timer_cb(evutil_socket_t fd, short events, void *arg) {
-    // printf("current time:, there are n connections\n");
-}
-
 static void accept_conn_cb(struct evconnlistener *listener, evutil_socket_t fd, struct sockaddr *addr, int socklen, void *ctx) {
     struct sockaddr_in *sock = (struct sockaddr_in *)addr;
     printf("Got a new connection from %s:%d!\n", inet_ntoa(sock->sin_addr), ntohs(sock->sin_port));
 
+    // 创建ssl
     SSL_CTX *server_ctx = (SSL_CTX *)ctx;
     SSL *client_ssl = SSL_new(server_ctx);
 
+    // 创建bufferevent,设置回调函数
     struct event_base *base = evconnlistener_get_base(listener);
     struct bufferevent *bev = bufferevent_openssl_socket_new(base, fd, client_ssl, BUFFEREVENT_SSL_ACCEPTING, BEV_OPT_CLOSE_ON_FREE);
-    // bufferevent_openssl_set_allow_dirty_shutdown(bev, 1);
-
+    bufferevent_openssl_set_allow_dirty_shutdown(bev, 1); // 允许因网络等问题意外断开连接
     bufferevent_setcb(bev, read_cb, NULL, event_cb, NULL);
     bufferevent_enable(bev, EV_READ|EV_WRITE);
+
+    // 设置超时断开连接
+    struct timeval tv;
+    evutil_timerclear(&tv);
+    tv.tv_sec = 2;
+    bufferevent_set_timeouts(bev, &tv, NULL);
 }
 
 static void accept_error_cb(struct evconnlistener *listener, void *ctx) {
@@ -199,6 +194,10 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
     printf("----- data ----\n");
     printf("%.*s\n", (int)evbuffer_get_length(in), evbuffer_pullup(in, -1));
 
+    sleep(5);
+    int keep_alive = 1, conn_close = 0;
+    int chunk = 0;
+    int pipeline = 0;
     // char buf[128][1024];
     // memset(buf, 0, sizeof(buf));
     // if (HTTP_Parser(evbuffer_pullup(in, -1), buf));
@@ -207,12 +206,13 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
     // }
 
     bufferevent_write_buffer(bev, in);
+    if (!keep_alive || conn_close) bufferevent_free(bev);
 }
 
 static void event_cb(struct bufferevent *bev, short events, void *ctx) {
     if (events & BEV_EVENT_ERROR)
         perror("Error from bufferevent");
-    if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
+    if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR | BEV_EVENT_TIMEOUT)) {
         bufferevent_free(bev);
     }
 }
