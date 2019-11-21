@@ -75,7 +75,7 @@ int main()
     SSL *ssl = SSL_new(ctx);
 
     // 创建socket
-    int port = 8088;
+    int port = 443;
     struct sockaddr_in my_address;
     memset(&my_address, 0, sizeof(my_address));
     my_address.sin_family = AF_INET;
@@ -154,9 +154,8 @@ void event_cb(struct bufferevent *bev, short events, void *arg) {
     else if (events & BEV_EVENT_TIMEOUT) {
         printf("Connection timeout.\n");
     }
-    struct event *ev = (struct event *)arg;
-    bufferevent_free(bev);
-    event_free(ev);
+    struct event_base *base = bufferevent_get_base(bev);
+    event_base_loopexit(base, NULL);
 }
 
 void server_msg_cb(struct bufferevent *bev, void *arg) {

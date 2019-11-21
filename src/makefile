@@ -2,7 +2,8 @@
 
 default:
 	gcc -O server.c -o server -lssl -lcrypto -levent -levent_openssl -levent_pthreads
-	gcc -O client.c -o client -lssl -lcrypto -levent -levent_openssl -levent_pthreads
+	gcc -O http_client.c -o http_client -lssl -lcrypto -levent -levent_openssl -levent_pthreads
+	gcc -O https_client.c -o https_client -lssl -lcrypto -levent -levent_openssl -levent_pthreads
 
 clean:
-	rm server client:
+	rm server *client *log

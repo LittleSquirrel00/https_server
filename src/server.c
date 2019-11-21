@@ -28,11 +28,10 @@
 #include <event2/thread.h>
 
 // 分块传输控制块
-struct Chunk_Data {
+struct HTTP_Chunk {
     struct bufferevent *bev;
-    char **chunk_data;
+    char *HTTP_msg;
     struct event *timer;
-    int i;
 };
 
 /** OpenSSL初始化程序
@@ -48,6 +47,8 @@ struct Chunk_Data {
  */
 static SSL_CTX* Init_OpenSSL(char *cert_file, char *priv_file);
 
+static void signal_cb(evutil_socket_t fd, short events, void *arg);
+
 /** listener回调函数
  *  实现：
  *      接受TCP连接
@@ -55,16 +56,22 @@ static SSL_CTX* Init_OpenSSL(char *cert_file, char *priv_file);
  *      创建libevent，利用libevent处理消息
  *      设置libevent读、写、事件回调函数和超时
  *      默认长连接、非管道化
- *  TODO: 同时支持SSL加密和未加密
  *  TODO: 管道
  */
-static void accept_conn_cb(struct evconnlistener *listener, evutil_socket_t fd, struct sockaddr *addr, int socklen, void *ctx);
+static void https_accept_cb(struct evconnlistener *listener, evutil_socket_t fd, struct sockaddr *addr, int socklen, void *ctx);
+
+static void http_accept_cb(struct evconnlistener *listener, evutil_socket_t fd, struct sockaddr *addr, int socklen, void *ctx);
 
 /** listener的事件回调函数
  *  实现：
  *     处理监听器意外事件，断开连接，释放事件资源，终止服务运行
  */
 static void accept_error_cb(struct evconnlistener *listener, void *ctx);
+
+/** 分块传输读取动态内容
+ *  TODO:读取方式
+ */
+static int chunk_read(char *msg, char *buf, int eof);
 
 /** 利用定时器事件进行分块传输
  *
@@ -92,39 +99,44 @@ static void read_cb(struct bufferevent *bev, void *ctx);
 static void event_cb(struct bufferevent *bev, short events, void *ctx);
 
 /** TODO: 实现HTTP解析
+ *  实现：
+ *      解析HTTP，确认返回编码    
  *  参数：
- *      char *msg: SSL解码后的消息字符串
- *      char **buf: HTTP处理后返回的消息字符串，可进行分块，实现分块传输
+ *      short *msg: SSL解码后的消息字符串
+ *      char *buf: HTTP处理后返回的消息字符串
  *  返回值：
- *      int： 0 表示HTTP处理成功；1 表示HTTP处理失败
+ *      short:   GET、POST、上传、下载、KEEP-ALIVE、Req-Close、Chunk、出错
+ *      默认值：   0    0      0    0       1           0       0     0
+ *      0b00001000
  *  TODO: HTTP状态码
  *  TODO: GET、POST报文解析，应答报文
  *  TODO: 上传、下载文件
  */
-int HTTP_Parser(char *msg, char **buf);
+short HTTP_Parser(char *msg, char *buf);
 
 /// TODO: 线程池
 int main(int argc, char **argv) {
     struct event_base *base;
-    struct evconnlistener *listener;
-    struct sockaddr_in sin;
+    struct evconnlistener *http_listener, *https_listener;
+    struct sockaddr_in http_sin, https_sin;
 
-    int port = argc > 1 ? atoi(argv[1]) : 8088;
-    if (port<=0 || port>65535) {
-        puts("Invalid port");
-        return 1;
-    }
+    int http_port = 8080;
+    int https_port = 443;
 
     // 初始化openssl
-    char *cert = argc > 2 ? argv[2] : "cacert.pem";
-    char *priv = argc > 3 ? argv[3] : "private_key.pem";
+    char *cert = argc > 1 ? argv[1] : "cacert.pem";
+    char *priv = argc > 2 ? argv[2] : "private_key.pem";
     SSL_CTX *ctx = Init_OpenSSL(cert, priv);
 
     // 设置地址sockaddr
-    memset(&sin, 0, sizeof(sin));
-    sin.sin_family = AF_INET;           // This is an INET address
-    sin.sin_addr.s_addr = htonl(0);     // Listen on 0.0.0.0
-    sin.sin_port = htons(port);         // Listen on the given port.
+    memset(&http_sin, 0, sizeof(http_sin));
+    http_sin.sin_family = AF_INET;           // This is an INET address
+    http_sin.sin_addr.s_addr = htonl(0);     // Listen on 0.0.0.0
+    http_sin.sin_port = htons(http_port);    // Listen on the given port.
+    memset(&https_sin, 0, sizeof(https_sin));
+    https_sin.sin_family = AF_INET;           // This is an INET address
+    https_sin.sin_addr.s_addr = htonl(0);     // Listen on 0.0.0.0
+    https_sin.sin_port = htons(https_port);   // Listen on the given port.
 
     // 创建事件循环
     base = event_base_new();
@@ -133,21 +145,35 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // 创建listener
-    listener = evconnlistener_new_bind(base, accept_conn_cb, (void *)ctx,
-        LEV_OPT_CLOSE_ON_FREE|LEV_OPT_REUSEABLE, -1, (struct sockaddr*)&sin, sizeof(sin));
-    if (!listener) {
-        perror("Couldn't create listener");
+    // signal事件
+    int signo = SIGINT;
+    struct event *evs = evsignal_new(base, signo, signal_cb, NULL);
+    evsignal_add(evs, NULL);
+
+    // 创建listener,绑定监听地址
+    http_listener = evconnlistener_new_bind(base, http_accept_cb, NULL,
+        LEV_OPT_CLOSE_ON_FREE|LEV_OPT_REUSEABLE, -1, (struct sockaddr*)&http_sin, sizeof(http_sin));
+    if (http_listener) {
+        printf("Listen to %s:%d\n", inet_ntoa(http_sin.sin_addr), ntohs(http_sin.sin_port));
+        evconnlistener_set_error_cb(http_listener, accept_error_cb);
+    }
+    https_listener = evconnlistener_new_bind(base, https_accept_cb, (void *)ctx,
+        LEV_OPT_CLOSE_ON_FREE|LEV_OPT_REUSEABLE, -1, (struct sockaddr*)&https_sin, sizeof(https_sin));
+    if (https_listener) {
+        printf("Listen to %s:%d\n", inet_ntoa(https_sin.sin_addr), ntohs(https_sin.sin_port));
+        evconnlistener_set_error_cb(https_listener, accept_error_cb);
+    }
+    if (!http_listener && !https_listener) {
+        perror("Couldn't create listener!");
         return 1;
     }
-    evconnlistener_set_error_cb(listener, accept_error_cb);
-    printf("Listen to %s:%d\n", inet_ntoa(sin.sin_addr), ntohs(sin.sin_port));
 
     // 开始执行事件循环、检测事件, 运行服务器
     event_base_dispatch(base);
 
     // 结束服务，释放资源
-    evconnlistener_free(listener);
+    evconnlistener_free(http_listener);
+    evconnlistener_free(https_listener);
     event_base_free(base);
     SSL_CTX_free(ctx);
 
@@ -170,9 +196,30 @@ static SSL_CTX* Init_OpenSSL(char *cert_file, char *priv_file) {
     return ctx;
 }
 
-static void accept_conn_cb(struct evconnlistener *listener, evutil_socket_t fd, struct sockaddr *addr, int socklen, void *ctx) {
+static void signal_cb(evutil_socket_t fd, short events, void *arg) {
+    exit(0);
+}
+
+static void http_accept_cb(struct evconnlistener *listener, evutil_socket_t fd, struct sockaddr *addr, int socklen, void *ctx) {
     struct sockaddr_in *sock = (struct sockaddr_in *)addr;
-    printf("Got a new connection from %s:%d!\n", inet_ntoa(sock->sin_addr), ntohs(sock->sin_port));
+    printf("Got a http accept from %s:%d!\n", inet_ntoa(sock->sin_addr), ntohs(sock->sin_port));
+
+    // 创建bufferevent,设置回调函数
+    struct event_base *base = evconnlistener_get_base(listener);
+    struct bufferevent *bev = bufferevent_socket_new(base, fd, BEV_OPT_CLOSE_ON_FREE);
+    bufferevent_setcb(bev, read_cb, NULL, event_cb, NULL);
+    bufferevent_enable(bev, EV_READ|EV_WRITE);
+
+    // 设置超时断开连接
+    struct timeval tv;
+    evutil_timerclear(&tv);
+    tv.tv_sec = 2;
+    bufferevent_set_timeouts(bev, &tv, NULL);
+}
+
+static void https_accept_cb(struct evconnlistener *listener, evutil_socket_t fd, struct sockaddr *addr, int socklen, void *ctx) {
+    struct sockaddr_in *sock = (struct sockaddr_in *)addr;
+    printf("Got a https accept from %s:%d!\n", inet_ntoa(sock->sin_addr), ntohs(sock->sin_port));
 
     // 创建ssl
     SSL_CTX *server_ctx = (SSL_CTX *)ctx;
@@ -200,62 +247,92 @@ static void accept_error_cb(struct evconnlistener *listener, void *ctx) {
     event_base_loopexit(base, NULL);
 }
 
-static void chunk_timer_cb(evutil_socket_t fd, short events, void *arg) {
-    struct Chunk_Data *chunk = (struct Chunk_Data *)arg;
-    struct evbuffer *evb = evbuffer_new();
-    /// TODO:判断条件
-    if (chunk->i < sizeof(chunk->chunk_data)) {
-        evbuffer_add_printf(evb, "%s", chunk->chunk_data[chunk->i]);
+static int chunk_read(char *msg, char *buf, int eof) {
+    return 0;
+}
+
+static void http_chunk_cb(evutil_socket_t fd, short events, void *arg) {
+    struct HTTP_Chunk *chunk = (struct HTTP_Chunk *)arg;
+    int buf_size = 4 * 1024;
+    int eof = 0;
+    char *buf = (char *)malloc((buf_size + 1) * sizeof(char));
+    memset(buf, 0, (buf_size + 1) * sizeof(char));
+    int size = chunk_read(chunk->HTTP_msg, buf, eof);
+    if (size > 0) {
+        struct evbuffer *evb = evbuffer_new();
+        evbuffer_add_printf(evb, "%s", buf);
         bufferevent_write_buffer(chunk->bev, evb);
         evbuffer_free(evb);
     }
+
+    // 设置定时器
     struct timeval *tv = (struct timeval *)malloc(sizeof(struct timeval));
     evutil_timerclear(tv);
-    tv->tv_sec = 1;
+    tv->tv_usec = 1000 * 100;
     evtimer_add(chunk->timer, tv);
 }
 
 static void read_cb(struct bufferevent *bev, void *ctx) {
-    struct evbuffer *in = bufferevent_get_input(bev);
+    short GET = 0b10000000, POST = 0b01000000, UPLOAD = 0b00100000, DOWNLOAD = 0b00010000;
+    short KEEP_ALIVE = 0b00001000, REQ_CLOSE = 0b00000100, CHUNKED = 0b00000010, ERROR = 0b00000001;
 
-    printf("Received %zu bytes\n", evbuffer_get_length(in));
+    struct evbuffer *input = bufferevent_get_input(bev);
+    struct evbuffer *output = evbuffer_new();
+    int len = evbuffer_get_length(input);
+    
+    char *msg = (char *)malloc((len + 1) * sizeof(char));
+    memset(msg, 0, (len + 1) * sizeof(char));
+    int size = evbuffer_remove(input, msg, len);
+    
+    int buf_size = 4 * 1024;
+    char *buf = (char *)malloc((buf_size + 1) * sizeof(char));
+    memset(buf, 0, (buf_size + 1) * sizeof(char));
+    
+    short code = HTTP_Parser(msg, buf);
+    if (code & ERROR) {
+        printf("HTTP Parser ERROR!");
+        free(msg);
+        free(buf);
+        evbuffer_free(output);
+        bufferevent_free(bev);
+        return ;
+    }
+    short keep_alive = code & KEEP_ALIVE;
+    short req_close = code & REQ_CLOSE;
+    short chunked = code & CHUNKED;
+
+    printf("Received %d bytes\n", len);
     printf("----- data ----\n");
-    printf("%.*s\n", (int)evbuffer_get_length(in), evbuffer_pullup(in, -1));
+    printf("%.*s\n", len, msg);
 
-    // sleep(0.1);
-
-    int keep_alive = 1, conn_close = 0;
-    int chunk = 0;
-    int pipeline = 0;
-
-    // char *buf = (char *)malloc(1024*sizeof(char));
-    // memset(buf, 0, sizeof(buf));
-    // if (HTTP_Parser(evbuffer_pullup(in, -1), buf));
-    // for (int i = 0; i < 128 && strlen(buf[i]) > 0; i++) {
-    //     bufferevent_write_buffer(bev, buf[i]);
-    // }
-
+    evbuffer_add_printf(output, "%s", msg);    
+    bufferevent_write_buffer(bev, output);
+    // bufferevent_write_buffer(bev, output);
+    
     // 添加定时器事件实现分块传输
-    if (keep_alive && chunk) {
-        struct Chunk_Data *chunk = (struct Chunk_Data *)malloc(sizeof(struct Chunk_Data));
+    if (keep_alive && !req_close && chunked) {
+        struct HTTP_Chunk *chunk = (struct HTTP_Chunk *)malloc(sizeof(struct HTTP_Chunk));
         struct event_base *base = bufferevent_get_base(bev);
-        struct event *chunk_timer = event_new(base, -1, EV_TIMEOUT, chunk_timer_cb, chunk);
-        chunk->chunk_data;
+        struct event *timer = event_new(base, -1, EV_TIMEOUT, http_chunk_cb, chunk);
         chunk->bev = bev;
-        chunk->timer = chunk_timer;
-        chunk->i = 0;
+        chunk->HTTP_msg = msg;
+        chunk->timer = timer;
+
         struct timeval *tv = (struct timeval *)malloc(sizeof(struct timeval));
         evutil_timerclear(tv);
-        tv->tv_sec = 1;
-        evtimer_add(chunk_timer, tv);
+        tv->tv_usec = 1000 * 100;
+        evtimer_add(timer, tv);
+    
     }
     else {
-        struct evbuffer *out = evbuffer_new();
-        bufferevent_write_buffer(bev, in);
+        free(msg);
     }
 
-    // 持久连接
-    if (!keep_alive || conn_close) bufferevent_free(bev);
+    free(buf);
+    evbuffer_free(output);
+
+    // 非持久连接
+    if (!keep_alive || req_close) bufferevent_free(bev);
 }
 
 static void event_cb(struct bufferevent *bev, short events, void *ctx) {
@@ -269,5 +346,6 @@ static void event_cb(struct bufferevent *bev, short events, void *ctx) {
     }
 }
 
-int HTTP_Parser(char *msg, char **buf) {
+short HTTP_Parser(char *msg, char *buf) {
+    return (short)0b00001000;
 }
