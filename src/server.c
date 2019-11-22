@@ -26,104 +26,8 @@
 #include <event2/bufferevent.h>
 #include <event2/bufferevent_ssl.h>
 #include <event2/thread.h>
-
-// 分块传输控制块
-struct HTTP_Chunk {
-    struct bufferevent *bev;
-    char *HTTP_msg;
-    struct event *timer;
-};
-
-/** OpenSSL初始化程序
- *  实现：
- *      初始化SSL库、加密算法、错误消息
- *      生成服务器ctx
- *      加载并校验证书和密钥  
- *  参数：
- *      char *cert_file: 证书的路径
- *      char *priv_file: 密钥的路径
- *  返回值：
- *      服务器ctx
- */
-static SSL_CTX* Init_OpenSSL(char *cert_file, char *priv_file);
-
-/** 信号事件回调函数
- */
-static void signal_cb(evutil_socket_t fd, short events, void *arg);
-
-/** https listener回调函数
- *  实现：
- *      接受TCP连接
- *      生成SSL，与客户端建立SSL连接
- *      创建libevent，利用libevent处理消息
- *      设置libevent读、写、事件回调函数和超时
- *      默认长连接、非管道化
- *  TODO: 管道
- */
-static void https_accept_cb(struct evconnlistener *listener, evutil_socket_t fd, struct sockaddr *addr, int socklen, void *ctx);
-
-/** http listener回调函数
- *  实现：
- *      接受TCP连接
- *      创建libevent，利用libevent处理消息
- *      设置libevent读、写、事件回调函数和超时
- *      默认长连接、非管道化
- *  TODO: 管道
- */
-static void http_accept_cb(struct evconnlistener *listener, evutil_socket_t fd, struct sockaddr *addr, int socklen, void *ctx);
-
-/** listener的事件回调函数
- *  实现：
- *     处理监听器意外事件，断开连接，释放事件资源，终止服务运行
- */
-static void accept_error_cb(struct evconnlistener *listener, void *ctx);
-
-/** 分块传输读取动态内容
- *  TODO:读取方式
- */
-static int chunk_read(char *msg, char *buf, int eof);
-
-/** 利用定时器事件进行分块传输
- *
- */
-static void chunk_timer_cb(evutil_socket_t fd, short events, void *arg);
-
-/** bufferevent的读回调函数
- *  实现：
- *      从读缓冲区读HTTP报文
- *      TODO: 解析HTTP请求报文
- *      TODO: 生成HTTP应答报文
- *      TODO: 分块传输/管道
- *      将HTTP应答报文写入写缓冲区
- *      是否使用长连接，KEEP-ALIVE为2s(超时断开连接)，短连接直接断开连接释放资源
- */
-static void read_cb(struct bufferevent *bev, void *ctx);
-
-/** bufferevent的事件回调函数
- *  实现：
- *      事件类型：BEV_EVENT_EOF:4,BEV_EVENT_ERROR:5,BEV_EVENT_TIMEOUT:6,BEV_EVENT_CONNECTED:7
- *      读写事件：BEV_EVENT_READING:0,BEV_EVENT_WRITING:1
- *      CONNECTED事件表示成功建立连接
- *      其他事件断开连接，释放事件资源
- */
-static void event_cb(struct bufferevent *bev, short events, void *ctx);
-
-/** TODO: 实现HTTP解析
- *  实现：
- *      解析HTTP，确认返回编码    
- *  参数：
- *      short *msg: SSL解码后的消息字符串
- *      char *buf: HTTP处理后返回的消息字符串
- *  返回值：
- *      short:   GET、POST、上传、下载、KEEP-ALIVE、Req-Close、Chunk、出错
- *      默认值：   0    0      0    0       1           0       0     0
- *      0b00001000
- *  TODO: HTTP状态码
- *  TODO: GET、POST报文解析，应答报文
- *  TODO: 上传、下载文件
- */
-short HTTP_Parser(char *msg, char *buf);
-
+#include "server.h"
+    
 /// TODO: 线程池
 int main(int argc, char **argv) {
     struct event_base *base;
@@ -154,11 +58,6 @@ int main(int argc, char **argv) {
         puts("Couldn't open event base");
         return 1;
     }
-
-    // signal事件
-    int signo = SIGINT;
-    struct event *evs = evsignal_new(base, signo, signal_cb, NULL);
-    evsignal_add(evs, NULL);
 
     // 创建listener,绑定监听地址
     http_listener = evconnlistener_new_bind(base, http_accept_cb, NULL,
@@ -204,10 +103,6 @@ static SSL_CTX* Init_OpenSSL(char *cert_file, char *priv_file) {
     }
     printf("Set up openssl ok!\nLoaded certificate:%s\nLoaded private key:%s\n", cert_file, priv_file);
     return ctx;
-}
-
-static void signal_cb(evutil_socket_t fd, short events, void *arg) {
-    exit(0);
 }
 
 static void http_accept_cb(struct evconnlistener *listener, evutil_socket_t fd, struct sockaddr *addr, int socklen, void *ctx) {
@@ -257,7 +152,7 @@ static void accept_error_cb(struct evconnlistener *listener, void *ctx) {
     event_base_loopexit(base, NULL);
 }
 
-static int chunk_read(char *msg, char *buf, int eof) {
+static int chunk_read(char *msg, char *buf, int *eof) {
     return 0;
 }
 
@@ -267,14 +162,17 @@ static void http_chunk_cb(evutil_socket_t fd, short events, void *arg) {
     int eof = 0;
     char *buf = (char *)malloc((buf_size + 1) * sizeof(char));
     memset(buf, 0, (buf_size + 1) * sizeof(char));
-    int size = chunk_read(chunk->HTTP_msg, buf, eof);
+    int size = chunk_read(chunk->HTTP_msg, buf, &eof);
     if (size > 0) {
         struct evbuffer *evb = evbuffer_new();
         evbuffer_add_printf(evb, "%s", buf);
         bufferevent_write_buffer(chunk->bev, evb);
         evbuffer_free(evb);
     }
-
+    if (eof) {
+        
+        return ;
+    } 
     // 设置定时器
     struct timeval *tv = (struct timeval *)malloc(sizeof(struct timeval));
     evutil_timerclear(tv);
@@ -286,6 +184,7 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
     short GET = 0b10000000, POST = 0b01000000, UPLOAD = 0b00100000, DOWNLOAD = 0b00010000;
     short KEEP_ALIVE = 0b00001000, REQ_CLOSE = 0b00000100, CHUNKED = 0b00000010, ERROR = 0b00000001;
 
+    // 从读缓冲区取出数据
     struct evbuffer *input = bufferevent_get_input(bev);
     struct evbuffer *output = evbuffer_new();
     int len = evbuffer_get_length(input);
@@ -298,6 +197,7 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
     char *buf = (char *)malloc((buf_size + 1) * sizeof(char));
     memset(buf, 0, (buf_size + 1) * sizeof(char));
     
+    // 解析http协议
     short code = HTTP_Parser(msg, buf);
     if (code & ERROR) {
         printf("HTTP Parser ERROR!");
@@ -315,6 +215,7 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
     printf("----- data ----\n");
     printf("%.*s\n", len, msg);
 
+    // 向写缓冲区写入数据
     evbuffer_add_printf(output, "%s", msg);    
     bufferevent_write_buffer(bev, output);
     
@@ -326,10 +227,11 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
         chunk->bev = bev;
         chunk->HTTP_msg = msg;
         chunk->timer = timer;
-
+        
+        // 定时器
         struct timeval *tv = (struct timeval *)malloc(sizeof(struct timeval));
         evutil_timerclear(tv);
-        tv->tv_usec = 1000 * 100;
+        tv->tv_usec = 1000 * 100; // 100ms
         evtimer_add(timer, tv);
     }
     else {
