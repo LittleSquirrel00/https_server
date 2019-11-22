@@ -84,8 +84,8 @@ int main()
         printf("connect success\n");
  
     // 将数据写入缓冲区
-    char *mesg = CreateMsg(GET, NULL);
-    bufferevent_write(conn, mesg, strlen(mesg));
+    // char *mesg = CreateMsg(GET, NULL);
+    // bufferevent_write(conn, mesg, strlen(mesg));
 
     // // 检测写入缓冲区数据
     // struct evbuffer* output = bufferevent_get_output(conn);

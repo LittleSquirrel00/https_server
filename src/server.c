@@ -47,9 +47,11 @@ struct HTTP_Chunk {
  */
 static SSL_CTX* Init_OpenSSL(char *cert_file, char *priv_file);
 
+/** 信号事件回调函数
+ */
 static void signal_cb(evutil_socket_t fd, short events, void *arg);
 
-/** listener回调函数
+/** https listener回调函数
  *  实现：
  *      接受TCP连接
  *      生成SSL，与客户端建立SSL连接
@@ -60,6 +62,14 @@ static void signal_cb(evutil_socket_t fd, short events, void *arg);
  */
 static void https_accept_cb(struct evconnlistener *listener, evutil_socket_t fd, struct sockaddr *addr, int socklen, void *ctx);
 
+/** http listener回调函数
+ *  实现：
+ *      接受TCP连接
+ *      创建libevent，利用libevent处理消息
+ *      设置libevent读、写、事件回调函数和超时
+ *      默认长连接、非管道化
+ *  TODO: 管道
+ */
 static void http_accept_cb(struct evconnlistener *listener, evutil_socket_t fd, struct sockaddr *addr, int socklen, void *ctx);
 
 /** listener的事件回调函数
@@ -211,10 +221,10 @@ static void http_accept_cb(struct evconnlistener *listener, evutil_socket_t fd, 
     bufferevent_enable(bev, EV_READ|EV_WRITE);
 
     // 设置超时断开连接
-    struct timeval tv;
-    evutil_timerclear(&tv);
-    tv.tv_sec = 2;
-    bufferevent_set_timeouts(bev, &tv, NULL);
+    struct timeval *tv = (struct timeval *)malloc(sizeof(struct timeval));
+    evutil_timerclear(tv);
+    tv->tv_sec = 2;
+    bufferevent_set_timeouts(bev, tv, NULL);
 }
 
 static void https_accept_cb(struct evconnlistener *listener, evutil_socket_t fd, struct sockaddr *addr, int socklen, void *ctx) {
@@ -232,11 +242,11 @@ static void https_accept_cb(struct evconnlistener *listener, evutil_socket_t fd,
     bufferevent_setcb(bev, read_cb, NULL, event_cb, NULL);
     bufferevent_enable(bev, EV_READ|EV_WRITE);
 
-    // 设置超时断开连接
-    struct timeval tv;
-    evutil_timerclear(&tv);
-    tv.tv_sec = 2;
-    bufferevent_set_timeouts(bev, &tv, NULL);
+    // 设置超时断开连接    
+    struct timeval *tv = (struct timeval *)malloc(sizeof(struct timeval));
+    evutil_timerclear(tv);
+    tv->tv_sec = 2;
+    bufferevent_set_timeouts(bev, tv, NULL);
 }
 
 static void accept_error_cb(struct evconnlistener *listener, void *ctx) {
@@ -307,7 +317,6 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
 
     evbuffer_add_printf(output, "%s", msg);    
     bufferevent_write_buffer(bev, output);
-    // bufferevent_write_buffer(bev, output);
     
     // 添加定时器事件实现分块传输
     if (keep_alive && !req_close && chunked) {
@@ -322,7 +331,6 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
         evutil_timerclear(tv);
         tv->tv_usec = 1000 * 100;
         evtimer_add(timer, tv);
-    
     }
     else {
         free(msg);
