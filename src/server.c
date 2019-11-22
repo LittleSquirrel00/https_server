@@ -10,6 +10,7 @@
 #include <string.h>
 #include <errno.h>
 #include <sys/types.h>
+#include <sys/sysinfo.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -27,9 +28,17 @@
 #include <event2/bufferevent_ssl.h>
 #include <event2/thread.h>
 #include "server.h"
-    
-/// TODO: 线程池
+
+Buffer_Thread *buffer_threads;
+int BUFFER_THREAD_NUMS;
+IO_Thread *io_threads;
+#define IO_THREAD_NUMS 2
+int buffer_thread_index;
+int io_thread_index;
+
 int main(int argc, char **argv) {
+    BUFFER_THREAD_NUMS = get_nprocs();
+    Listener_Thread *listener_thread = (Listener_Thread *)malloc(sizeof(Listener_Thread));
     struct event_base *base;
     struct evconnlistener *http_listener, *https_listener;
     struct sockaddr_in http_sin, https_sin;
@@ -52,12 +61,22 @@ int main(int argc, char **argv) {
     https_sin.sin_addr.s_addr = htonl(0);     // Listen on 0.0.0.0
     https_sin.sin_port = htons(https_port);   // Listen on the given port.
 
+    evthread_use_pthreads();
+    buffer_threads = Create_Buffer_Thread_Pool(BUFFER_THREAD_NUMS);
+    io_threads = Create_IO_Thread_Pool(IO_THREAD_NUMS);
+    printf("Create %d buffer threads and %d io threads\n", BUFFER_THREAD_NUMS, IO_THREAD_NUMS);
+    buffer_thread_index = 0;
+    io_thread_index = 0;
+
     // 创建事件循环
     base = event_base_new();
     if (!base) {
         puts("Couldn't open event base");
         return 1;
     }
+    
+    listener_thread->tid = pthread_self();
+    listener_thread->base = base;
 
     // 创建listener,绑定监听地址
     http_listener = evconnlistener_new_bind(base, http_accept_cb, NULL,
@@ -76,9 +95,16 @@ int main(int argc, char **argv) {
         perror("Couldn't create listener!");
         return 1;
     }
-
+    
     // 开始执行事件循环、检测事件, 运行服务器
     event_base_dispatch(base);
+
+    for (int i = 0; i < IO_THREAD_NUMS; i++) {
+        pthread_join(io_threads[i].tid, NULL);
+    }
+    for (int i = 0; i < get_nprocs(); i++) {
+        pthread_join(buffer_threads[i].tid, NULL);
+    }
 
     // 结束服务，释放资源
     evconnlistener_free(http_listener);
@@ -87,6 +113,70 @@ int main(int argc, char **argv) {
     SSL_CTX_free(ctx);
 
     return 0;
+}
+
+static Buffer_Thread *Create_Buffer_Thread_Pool(int threadnums) {
+    Buffer_Thread *threads = (Buffer_Thread *)malloc(threadnums * sizeof(Buffer_Thread));
+    for (int i = 0; i < threadnums; i++) {
+        if (pthread_create(&threads[i].tid, NULL, buffer_workers, &threads[i])) {
+            perror("Create buffer thread pool failed\n");
+            exit(1);
+        }
+    }
+    return threads;
+}
+
+static void buffer_cb(evutil_socket_t fd, short events, void *arg) {
+    Buffer_Thread *me = (Buffer_Thread *)arg;
+    printf("Current tid: %ld, there are %d events\n", pthread_self(), event_base_get_num_events(me->base, EVENT_BASE_COUNT_ADDED));
+}
+
+static void *buffer_workers(void *arg) {
+    Buffer_Thread *me = (Buffer_Thread *)arg;
+    me->base = event_base_new();
+    me->tid = pthread_self();
+    me->bev = NULL;
+    struct event *bufferd = event_new(me->base, -1, EV_TIMEOUT|EV_PERSIST, buffer_cb, me);
+    struct timeval tv;
+    evutil_timerclear(&tv);
+    tv.tv_sec = 3600;
+    evtimer_add(bufferd, &tv);
+    event_base_dispatch(me->base);
+    event_free(bufferd);
+    event_base_free(me->base);
+    return NULL;
+}
+
+static IO_Thread *Create_IO_Thread_Pool(int threadnums) {
+    IO_Thread *threads = (IO_Thread *)malloc(threadnums * sizeof(IO_Thread));
+    for (int i = 0; i < threadnums; i++) {
+        if (pthread_create(&threads[i].tid, NULL, io_workers, &threads[i])) {
+            perror("Create io thread failed!\n");
+            exit(1);
+        }
+    }
+    return threads;
+}
+
+static void io_cb(evutil_socket_t fd, short events, void *arg) {
+    IO_Thread *me = (IO_Thread *)arg;
+    printf("Current tid: %ld, there are %d events\n", pthread_self(), event_base_get_num_events(me->base, EVENT_BASE_COUNT_ADDED));
+}
+
+static void *io_workers(void *arg) {
+    IO_Thread *me = (IO_Thread *)arg;
+    me->base = event_base_new();
+    me->tid = pthread_self();
+    me->evb = NULL;
+    struct event *iod = event_new(me->base, -1, EV_TIMEOUT|EV_PERSIST, io_cb, me);
+    struct timeval tv;
+    evutil_timerclear(&tv);
+    tv.tv_sec = 3600;
+    evtimer_add(iod, &tv);
+    event_base_dispatch(me->base);
+    event_free(iod);
+    event_base_free(me->base);
+    return NULL;
 }
 
 static SSL_CTX* Init_OpenSSL(char *cert_file, char *priv_file) {
@@ -108,9 +198,9 @@ static SSL_CTX* Init_OpenSSL(char *cert_file, char *priv_file) {
 static void http_accept_cb(struct evconnlistener *listener, evutil_socket_t fd, struct sockaddr *addr, int socklen, void *ctx) {
     struct sockaddr_in *sock = (struct sockaddr_in *)addr;
     printf("Got a http accept from %s:%d!\n", inet_ntoa(sock->sin_addr), ntohs(sock->sin_port));
-
     // 创建bufferevent,设置回调函数
-    struct event_base *base = evconnlistener_get_base(listener);
+    struct event_base *base = buffer_threads[buffer_thread_index].base;
+    buffer_thread_index = (buffer_thread_index + 1) % BUFFER_THREAD_NUMS;
     struct bufferevent *bev = bufferevent_socket_new(base, fd, BEV_OPT_CLOSE_ON_FREE);
     bufferevent_setcb(bev, read_cb, NULL, event_cb, NULL);
     bufferevent_enable(bev, EV_READ|EV_WRITE);
@@ -131,7 +221,8 @@ static void https_accept_cb(struct evconnlistener *listener, evutil_socket_t fd,
     SSL *client_ssl = SSL_new(server_ctx);
 
     // 创建bufferevent,设置回调函数
-    struct event_base *base = evconnlistener_get_base(listener);
+    struct event_base *base = buffer_threads[buffer_thread_index].base;
+    buffer_thread_index = (buffer_thread_index + 1) % BUFFER_THREAD_NUMS;
     struct bufferevent *bev = bufferevent_openssl_socket_new(base, fd, client_ssl, BUFFEREVENT_SSL_ACCEPTING, BEV_OPT_CLOSE_ON_FREE);
     bufferevent_openssl_set_allow_dirty_shutdown(bev, 1); // 允许因网络等问题意外断开连接
     bufferevent_setcb(bev, read_cb, NULL, event_cb, NULL);
@@ -211,6 +302,7 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
     short req_close = code & REQ_CLOSE;
     short chunked = code & CHUNKED;
 
+    printf("Current thread: %ld, current socket fd: %d\n", pthread_self(), bufferevent_getfd(bev));
     printf("Received %d bytes\n", len);
     printf("----- data ----\n");
     printf("%.*s\n", len, msg);
@@ -243,6 +335,7 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
 
     // 非持久连接
     if (!keep_alive || req_close) bufferevent_free(bev);
+    // bufferevent_free(bev);
 }
 
 static void event_cb(struct bufferevent *bev, short events, void *ctx) {

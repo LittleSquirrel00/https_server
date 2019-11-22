@@ -25,7 +25,7 @@
 #include "client.h"
 
 enum MsgType {GET, POST, UPLOAD, DOWNLOAD}; // 请求报文类型
-
+int i = 0;
 /**
  *  TODO:HTTP请求报文
  *  TODO:HTTP持久连接，保持连接
@@ -58,14 +58,14 @@ int main()
         printf("connect success\n");
  
     // 将数据写入缓冲区
-    // char *mesg = CreateMsg(GET, NULL);
-    // bufferevent_write(conn, mesg, strlen(mesg));
+    char *mesg = CreateMsg(GET, NULL);
+    bufferevent_write(conn, mesg, strlen(mesg));
 
-    // // 检测写入缓冲区数据
-    // struct evbuffer* output = bufferevent_get_output(conn);
-    // int len = 0;
-    // len = evbuffer_get_length(output);
-    // printf("output buffer has %d bytes left\n", len);
+    // 检测写入缓冲区数据
+    struct evbuffer* output = bufferevent_get_output(conn);
+    int len = 0;
+    len = evbuffer_get_length(output);
+    printf("output buffer has %d bytes left\n", len);
  
     // 定时器
     struct event *timer = event_new(base, -1, EV_TIMEOUT|EV_PERSIST, timer_cb, conn);
@@ -131,7 +131,7 @@ static void timer_cb(evutil_socket_t fd, short events, void *arg) {
     struct bufferevent *conn = (struct bufferevent *)arg;
     char mesg[1024];
     memset(mesg, 0, sizeof(mesg));
-    sprintf(mesg, "%x", events);
+    sprintf(mesg, "%d", i++);
 
     struct evbuffer* output = bufferevent_get_output(conn);
     int len = 0;
