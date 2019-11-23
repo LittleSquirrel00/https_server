@@ -271,6 +271,10 @@ static void http_chunk_cb(evutil_socket_t fd, short events, void *arg) {
     evtimer_add(chunk->timer, tv);
 }
 
+static void io_event_cb(evutil_socket_t fd, short events, void *arg) {
+    struct bufferevent *bev = (struct bufferevent *)arg;
+}
+
 static void read_cb(struct bufferevent *bev, void *ctx) {
     short GET = 0b10000000, POST = 0b01000000, UPLOAD = 0b00100000, DOWNLOAD = 0b00010000;
     short KEEP_ALIVE = 0b00001000, REQ_CLOSE = 0b00000100, CHUNKED = 0b00000010, ERROR = 0b00000001;
@@ -287,6 +291,7 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
     int buf_size = 4 * 1024;
     char *buf = (char *)malloc((buf_size + 1) * sizeof(char));
     memset(buf, 0, (buf_size + 1) * sizeof(char));
+
     
     // 解析http协议
     short code = HTTP_Parser(msg, buf);
@@ -301,6 +306,8 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
     short keep_alive = code & KEEP_ALIVE;
     short req_close = code & REQ_CLOSE;
     short chunked = code & CHUNKED;
+    short upload = code & UPLOAD;
+    short download = code & DOWNLOAD;
 
     printf("Current thread: %ld, current socket fd: %d\n", pthread_self(), bufferevent_getfd(bev));
     printf("Received %d bytes\n", len);
@@ -310,7 +317,7 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
     // 向写缓冲区写入数据
     evbuffer_add_printf(output, "%s", msg);    
     bufferevent_write_buffer(bev, output);
-    
+
     // 添加定时器事件实现分块传输
     if (keep_alive && !req_close && chunked) {
         struct HTTP_Chunk *chunk = (struct HTTP_Chunk *)malloc(sizeof(struct HTTP_Chunk));
@@ -328,6 +335,16 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
     }
     else {
         free(msg);
+    }
+
+    if (upload || download) {
+        struct event_base *base = io_threads[io_thread_index].base;
+        io_thread_index = (io_thread_index + 1) % IO_THREAD_NUMS;
+        struct event * io_event = event_new(base, -1, EV_TIMEOUT|EV_PERSIST, io_event_cb, bev);
+        struct timeval tv;
+        evutil_timerclear(&tv);
+        tv.tv_usec = 0;
+        evtimer_add(io_event, &tv);
     }
 
     free(buf);

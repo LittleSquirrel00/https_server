@@ -52,7 +52,7 @@ int main()
     fd = socket(AF_INET, SOCK_STREAM, 0);
     struct bufferevent* conn = bufferevent_socket_new(base, fd, BEV_OPT_CLOSE_ON_FREE);
     bufferevent_setcb(conn, server_msg_cb, NULL, event_cb, NULL);
-    bufferevent_enable(conn, EV_WRITE|EV_READ);
+    bufferevent_enable(conn, EV_READ);
     // bufferevent_set_timeouts(conn, &tv, NULL);
     if(bufferevent_socket_connect(conn,(struct sockaddr*)&my_address,sizeof(my_address)) == 0)
         printf("connect success\n");
@@ -62,16 +62,16 @@ int main()
     bufferevent_write(conn, mesg, strlen(mesg));
 
     // 检测写入缓冲区数据
-    struct evbuffer* output = bufferevent_get_output(conn);
-    int len = 0;
-    len = evbuffer_get_length(output);
-    printf("output buffer has %d bytes left\n", len);
+    // struct evbuffer* output = bufferevent_get_output(conn);
+    // int len = 0;
+    // len = evbuffer_get_length(output);
+    // printf("output buffer has %d bytes left\n", len);
  
     // 定时器
     struct event *timer = event_new(base, -1, EV_TIMEOUT|EV_PERSIST, timer_cb, conn);
     struct timeval tv2;
     evutil_timerclear(&tv2);
-    tv2.tv_sec = 1;    
+    tv2.tv_usec = 1000*100;    
     evtimer_add(timer, &tv2);
 
     // 开始执行
@@ -131,7 +131,7 @@ static void timer_cb(evutil_socket_t fd, short events, void *arg) {
     struct bufferevent *conn = (struct bufferevent *)arg;
     char mesg[1024];
     memset(mesg, 0, sizeof(mesg));
-    sprintf(mesg, "%d", i++);
+    sprintf(mesg, "%d", i);
 
     struct evbuffer* output = bufferevent_get_output(conn);
     int len = 0;

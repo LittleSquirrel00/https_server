@@ -65,23 +65,23 @@ int main()
     struct event_base* base = event_base_new();
     evutil_socket_t fd;
     fd = socket(AF_INET, SOCK_STREAM, 0);
+    evutil_make_socket_nonblocking(fd);
     struct bufferevent* conn = bufferevent_openssl_socket_new(base, fd, ssl, BUFFEREVENT_SSL_CONNECTING, BEV_OPT_CLOSE_ON_FREE);
     bufferevent_setcb(conn, server_msg_cb, NULL, event_cb, NULL);
-    bufferevent_enable(conn, EV_WRITE|EV_READ);
+    bufferevent_enable(conn, EV_READ);
     // bufferevent_set_timeouts(conn, &tv, NULL);
-    bufferevent_openssl_set_allow_dirty_shutdown(conn, 1);
+    // bufferevent_openssl_set_allow_dirty_shutdown(conn, 1);
     if(bufferevent_socket_connect(conn,(struct sockaddr*)&my_address,sizeof(my_address)) == 0)
         printf("connect success\n");
- 
     // 将数据写入缓冲区
     char *mesg = CreateMsg(GET, NULL);
     bufferevent_write(conn, mesg, strlen(mesg));
 
-    // // 检测写入缓冲区数据
-    struct evbuffer* output = bufferevent_get_output(conn);
-    int len = 0;
-    len = evbuffer_get_length(output);
-    printf("output buffer has %d bytes left\n", len);
+    // 检测写入缓冲区数据
+    // struct evbuffer* output = bufferevent_get_output(conn);
+    // int len = 0;
+    // len = evbuffer_get_length(output);
+    // printf("output buffer has %d bytes left\n", len);
  
     // 定时器
     struct event *timer = event_new(base, -1, EV_TIMEOUT|EV_PERSIST, timer_cb, conn);
@@ -148,7 +148,7 @@ static void timer_cb(evutil_socket_t fd, short events, void *arg) {
     struct bufferevent *conn = (struct bufferevent *)arg;
     char mesg[1024];
     memset(mesg, 0, sizeof(mesg));
-    sprintf(mesg, "%d", i++);
+    sprintf(mesg, "%d", i);
 
     struct evbuffer* output = bufferevent_get_output(conn);
     int len = 0;
