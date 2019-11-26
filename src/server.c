@@ -28,6 +28,8 @@
 #include <event2/bufferevent_ssl.h>
 #include <event2/thread.h>
 #include "server.h"
+#include "sthread.h"
+#include "protocal.h"
 
 Buffer_Thread *buffer_threads;
 int BUFFER_THREAD_NUMS;
@@ -248,7 +250,7 @@ static int chunk_read(char *msg, char *buf, int *eof) {
 }
 
 static void http_chunk_cb(evutil_socket_t fd, short events, void *arg) {
-    struct HTTP_Chunk *chunk = (struct HTTP_Chunk *)arg;
+    HTTP_Chunk *chunk = (HTTP_Chunk *)arg;
     int buf_size = 4 * 1024;
     int eof = 0;
     char *buf = (char *)malloc((buf_size + 1) * sizeof(char));
@@ -276,43 +278,28 @@ static void io_event_cb(evutil_socket_t fd, short events, void *arg) {
 }
 
 static void read_cb(struct bufferevent *bev, void *ctx) {
-    short GET = 0b10000000, POST = 0b01000000, UPLOAD = 0b00100000, DOWNLOAD = 0b00010000;
-    short KEEP_ALIVE = 0b00001000, REQ_CLOSE = 0b00000100, CHUNKED = 0b00000010, ERROR = 0b00000001;
 
     // 从读缓冲区取出数据
     struct evbuffer *input = bufferevent_get_input(bev);
     struct evbuffer *output = evbuffer_new();
     int len = evbuffer_get_length(input);
-    
     char *msg = (char *)malloc((len + 1) * sizeof(char));
     memset(msg, 0, (len + 1) * sizeof(char));
-    int size = evbuffer_remove(input, msg, len);
+    // int size = evbuffer_remove(input, msg, len);
     
-    int buf_size = 4 * 1024;
-    char *buf = (char *)malloc((buf_size + 1) * sizeof(char));
-    memset(buf, 0, (buf_size + 1) * sizeof(char));
+    HTTP_Req *req = http_req_parser(input);
+    HTTP_Ack *ack = http_create_ack(req);
 
-    
-    // 解析http协议
-    short code = HTTP_Parser(msg, buf);
-    if (code & ERROR) {
-        printf("HTTP Parser ERROR!");
-        free(msg);
-        free(buf);
-        evbuffer_free(output);
-        bufferevent_free(bev);
-        return ;
-    }
-    short keep_alive = code & KEEP_ALIVE;
-    short req_close = code & REQ_CLOSE;
-    short chunked = code & CHUNKED;
-    short upload = code & UPLOAD;
-    short download = code & DOWNLOAD;
+    short keep_alive = ack->parser_code & HTTP_KEEP_ALIVE;
+    short req_close = ack->parser_code & HTTP_REQ_CLOSE;
+    short chunked = ack->parser_code & HTTP_CHUNKED;
+    short upload = ack->parser_code & HTTP_UPLOAD;
+    short download = ack->parser_code & HTTP_DOWNLOAD;
 
-    printf("Current thread: %ld, current socket fd: %d\n", pthread_self(), bufferevent_getfd(bev));
-    printf("Received %d bytes\n", len);
-    printf("----- data ----\n");
-    printf("%.*s\n", len, msg);
+    // printf("Current thread: %ld, current socket fd: %d\n", pthread_self(), bufferevent_getfd(bev));
+    // printf("Received %d bytes\n", len);
+    // printf("----- data ----\n");
+    // printf("%.*s\n", len, msg);
 
     // 向写缓冲区写入数据
     evbuffer_add_printf(output, "%s", msg);    
@@ -320,7 +307,7 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
 
     // 添加定时器事件实现分块传输
     if (keep_alive && !req_close && chunked) {
-        struct HTTP_Chunk *chunk = (struct HTTP_Chunk *)malloc(sizeof(struct HTTP_Chunk));
+        HTTP_Chunk *chunk = (HTTP_Chunk *)malloc(sizeof(HTTP_Chunk));
         struct event_base *base = bufferevent_get_base(bev);
         struct event *timer = event_new(base, -1, EV_TIMEOUT, http_chunk_cb, chunk);
         chunk->bev = bev;
@@ -347,7 +334,7 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
         evtimer_add(io_event, &tv);
     }
 
-    free(buf);
+    // free(buf);
     evbuffer_free(output);
 
     // 非持久连接
@@ -359,13 +346,6 @@ static void event_cb(struct bufferevent *bev, short events, void *ctx) {
     if (events & BEV_EVENT_ERROR)
         perror("Error from bufferevent");
     if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR | BEV_EVENT_TIMEOUT)) {
-        if (BEV_EVENT_TIMEOUT) printf("timeout");
-        if (BEV_EVENT_EOF) printf("eof");
-        if (BEV_EVENT_ERROR) printf("error");
         bufferevent_free(bev);
     }
-}
-
-short HTTP_Parser(char *msg, char *buf) {
-    return (short)0b00001000;
 }

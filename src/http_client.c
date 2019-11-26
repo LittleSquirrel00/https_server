@@ -131,7 +131,7 @@ static void timer_cb(evutil_socket_t fd, short events, void *arg) {
     struct bufferevent *conn = (struct bufferevent *)arg;
     char mesg[1024];
     memset(mesg, 0, sizeof(mesg));
-    sprintf(mesg, "%d", i);
+    sprintf(mesg, "%d", i++);
 
     struct evbuffer* output = bufferevent_get_output(conn);
     int len = 0;

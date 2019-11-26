@@ -74,8 +74,19 @@ int main()
     if(bufferevent_socket_connect(conn,(struct sockaddr*)&my_address,sizeof(my_address)) == 0)
         printf("connect success\n");
     // 将数据写入缓冲区
-    char *mesg = CreateMsg(GET, NULL);
-    bufferevent_write(conn, mesg, strlen(mesg));
+    char *g = "GET /books/?sex=man&name=Professional HTTP/1.1\r\n" 
+        "Host: www.example.com\r\n" 
+        "User-Agent: Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US; rv:1.7.6) Gecko/20050225 Firefox/1.0.1\r\n" 
+        "Connection: Keep-Alive\r\n";
+    char *p = "POST / HTTP/1.1\r\n" 
+        "Host: www.example.com\r\n" 
+        "User-Agent: Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US; rv:1.7.6) Gecko/20050225 Firefox/1.0.1\r\n"
+        "Content-Type: application/x-www-form-urlencoded\r\n"
+        "Content-Length: 40\r\n"
+        "Connection: Keep-Alive\r\n\r\n"
+        "sex=man&name=Professional\r\n";
+    char *msg = p;
+    bufferevent_write(conn, msg, strlen(msg));
 
     // 检测写入缓冲区数据
     // struct evbuffer* output = bufferevent_get_output(conn);
@@ -148,7 +159,7 @@ static void timer_cb(evutil_socket_t fd, short events, void *arg) {
     struct bufferevent *conn = (struct bufferevent *)arg;
     char mesg[1024];
     memset(mesg, 0, sizeof(mesg));
-    sprintf(mesg, "%d", i);
+    sprintf(mesg, "%d", i++);
 
     struct evbuffer* output = bufferevent_get_output(conn);
     int len = 0;
