@@ -11,11 +11,13 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/sysinfo.h>
+#include <sys/stat.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <http_parser.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <pthread.h>
@@ -29,7 +31,8 @@
 #include <event2/thread.h>
 #include "server.h"
 #include "sthread.h"
-#include "protocal.h"
+#include "parser.h"
+// #include "protocal.h"
 
 Buffer_Thread *buffer_threads;
 int BUFFER_THREAD_NUMS;
@@ -278,31 +281,48 @@ static void io_event_cb(evutil_socket_t fd, short events, void *arg) {
 }
 
 static void read_cb(struct bufferevent *bev, void *ctx) {
-
     // 从读缓冲区取出数据
     struct evbuffer *input = bufferevent_get_input(bev);
     struct evbuffer *output = evbuffer_new();
     int len = evbuffer_get_length(input);
     char *msg = (char *)malloc((len + 1) * sizeof(char));
     memset(msg, 0, (len + 1) * sizeof(char));
-    // int size = evbuffer_remove(input, msg, len);
+    int size = evbuffer_remove(input, msg, len);
+
+    http_parser_settings parser_set;
+    http_parser_settings_init(&parser_set);
+    parser_set.on_message_begin = on_message_begin;
+    parser_set.on_url = on_url;
+    // parser_set.on_status = on_status;
+    parser_set.on_header_field = on_header_field;
+    parser_set.on_header_value = on_header_value;
+    parser_set.on_body = on_body;
+    parser_set.on_headers_complete = on_headers_complete;
+    parser_set.on_message_complete = on_message_complete;
+
+    char *data;
+    http_parser *parser;
+    parser = (http_parser *)malloc(sizeof(http_parser));
+    http_parser_init(parser, HTTP_REQUEST);
+    parser->data = data;
+    int parser_len = http_parser_execute(parser, &parser_set, msg, len);
+
+    if (parser->upgrade) {
+        /* handle new protocol */
+    } else if (parser_len != len) {
+        /* Handle error. Usually just close the connection. */
+    }
     
-    HTTP_Req *req = http_req_parser(input);
-    HTTP_Ack *ack = http_create_ack(req);
-
-    short keep_alive = ack->parser_code & HTTP_KEEP_ALIVE;
-    short req_close = ack->parser_code & HTTP_REQ_CLOSE;
-    short chunked = ack->parser_code & HTTP_CHUNKED;
-    short upload = ack->parser_code & HTTP_UPLOAD;
-    short download = ack->parser_code & HTTP_DOWNLOAD;
-
-    // printf("Current thread: %ld, current socket fd: %d\n", pthread_self(), bufferevent_getfd(bev));
-    // printf("Received %d bytes\n", len);
-    // printf("----- data ----\n");
-    // printf("%.*s\n", len, msg);
+    short keep_alive = parser->flags & F_CONNECTION_KEEP_ALIVE;
+    short req_close = parser->flags & F_CONNECTION_CLOSE;
+    short chunked = parser->flags & F_CHUNKED; 
+    short upload = 0, download = 0;
+    
+    if (data)
+        printf("%s\n", data);
 
     // 向写缓冲区写入数据
-    evbuffer_add_printf(output, "%s", msg);    
+    evbuffer_add_printf(output, "%s", data);    
     bufferevent_write_buffer(bev, output);
 
     // 添加定时器事件实现分块传输
@@ -334,12 +354,10 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
         evtimer_add(io_event, &tv);
     }
 
-    // free(buf);
     evbuffer_free(output);
 
     // 非持久连接
     if (!keep_alive || req_close) bufferevent_free(bev);
-    // bufferevent_free(bev);
 }
 
 static void event_cb(struct bufferevent *bev, short events, void *ctx) {
