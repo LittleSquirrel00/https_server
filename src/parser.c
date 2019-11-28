@@ -2,6 +2,8 @@
 #include <http_parser.h>
 #include "parser.h"
 
+char *HOME_DIR;
+
 int on_message_begin(http_parser *parser) {
     printf("\n***MESSAGE BEGIN***\n\n");
     return 0;

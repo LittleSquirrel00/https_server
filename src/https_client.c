@@ -85,7 +85,7 @@ int main()
         "Content-Length: 40\r\n"
         "Connection: Keep-Alive\r\n\r\n"
         "sex=man&name=Professional\r\n";
-    char *msg = p;
+    char *msg = g;
     bufferevent_write(conn, msg, strlen(msg));
 
     // 检测写入缓冲区数据
