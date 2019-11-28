@@ -32,17 +32,17 @@
 #include "server.h"
 #include "sthread.h"
 #include "parser.h"
-// #include "protocal.h"
 
-Buffer_Thread *buffer_threads;
-int BUFFER_THREAD_NUMS;
-IO_Thread *io_threads;
-#define IO_THREAD_NUMS 2
-int buffer_thread_index;
-int io_thread_index;
+extern Buffer_Thread *buffer_threads;
+extern int BUFFER_THREAD_NUMS;
+extern int buffer_thread_index;
+extern IO_Thread *io_threads;
+extern int IO_THREAD_NUMS;
+extern int io_thread_index;
 
 int main(int argc, char **argv) {
     BUFFER_THREAD_NUMS = get_nprocs();
+    IO_THREAD_NUMS = 2;
     Listener_Thread *listener_thread = (Listener_Thread *)malloc(sizeof(Listener_Thread));
     struct event_base *base;
     struct evconnlistener *http_listener, *https_listener;
@@ -118,70 +118,6 @@ int main(int argc, char **argv) {
     SSL_CTX_free(ctx);
 
     return 0;
-}
-
-static Buffer_Thread *Create_Buffer_Thread_Pool(int threadnums) {
-    Buffer_Thread *threads = (Buffer_Thread *)malloc(threadnums * sizeof(Buffer_Thread));
-    for (int i = 0; i < threadnums; i++) {
-        if (pthread_create(&threads[i].tid, NULL, buffer_workers, &threads[i])) {
-            perror("Create buffer thread pool failed\n");
-            exit(1);
-        }
-    }
-    return threads;
-}
-
-static void buffer_cb(evutil_socket_t fd, short events, void *arg) {
-    Buffer_Thread *me = (Buffer_Thread *)arg;
-    printf("Current tid: %ld, there are %d events\n", pthread_self(), event_base_get_num_events(me->base, EVENT_BASE_COUNT_ADDED));
-}
-
-static void *buffer_workers(void *arg) {
-    Buffer_Thread *me = (Buffer_Thread *)arg;
-    me->base = event_base_new();
-    me->tid = pthread_self();
-    me->bev = NULL;
-    struct event *bufferd = event_new(me->base, -1, EV_TIMEOUT|EV_PERSIST, buffer_cb, me);
-    struct timeval tv;
-    evutil_timerclear(&tv);
-    tv.tv_sec = 3600;
-    evtimer_add(bufferd, &tv);
-    event_base_dispatch(me->base);
-    event_free(bufferd);
-    event_base_free(me->base);
-    return NULL;
-}
-
-static IO_Thread *Create_IO_Thread_Pool(int threadnums) {
-    IO_Thread *threads = (IO_Thread *)malloc(threadnums * sizeof(IO_Thread));
-    for (int i = 0; i < threadnums; i++) {
-        if (pthread_create(&threads[i].tid, NULL, io_workers, &threads[i])) {
-            perror("Create io thread failed!\n");
-            exit(1);
-        }
-    }
-    return threads;
-}
-
-static void io_cb(evutil_socket_t fd, short events, void *arg) {
-    IO_Thread *me = (IO_Thread *)arg;
-    printf("Current tid: %ld, there are %d events\n", pthread_self(), event_base_get_num_events(me->base, EVENT_BASE_COUNT_ADDED));
-}
-
-static void *io_workers(void *arg) {
-    IO_Thread *me = (IO_Thread *)arg;
-    me->base = event_base_new();
-    me->tid = pthread_self();
-    me->evb = NULL;
-    struct event *iod = event_new(me->base, -1, EV_TIMEOUT|EV_PERSIST, io_cb, me);
-    struct timeval tv;
-    evutil_timerclear(&tv);
-    tv.tv_sec = 3600;
-    evtimer_add(iod, &tv);
-    event_base_dispatch(me->base);
-    event_free(iod);
-    event_base_free(me->base);
-    return NULL;
 }
 
 static SSL_CTX* Init_OpenSSL(char *cert_file, char *priv_file) {

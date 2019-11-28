@@ -28,18 +28,18 @@ typedef struct {
  *  返回值：
  *      Bufferevent线程池指针
  */
-static Buffer_Thread *Create_Buffer_Thread_Pool(int threadnums);
+Buffer_Thread *Create_Buffer_Thread_Pool(int threadnums);
 
 /** 初始化Bufferevent子线程
  *  实现：
  *      创建event_base事件循环
  *      创建定时器事件做守护进程，防止事件循环退出
  */
-static void *buffer_workers(void *arg);
+void *buffer_workers(void *arg);
 
 /** 守护进程，空函数，防止Bufferevent线程的事件循环自动终止
  */
-static void buffer_cb(evutil_socket_t fd, short events, void *arg);
+void buffer_cb(evutil_socket_t fd, short events, void *arg);
 
 /** 创建文件读写IO的线程池，用于处理上传或下载文件
  *  实现：
@@ -48,17 +48,17 @@ static void buffer_cb(evutil_socket_t fd, short events, void *arg);
  *  返回值：
  *      IO线程池指针
  */
-static IO_Thread *Create_IO_Thread_Pool(int threadnums);
+IO_Thread *Create_IO_Thread_Pool(int threadnums);
 
 /** 初始化IO子线程
  *  实现：
  *      创建event_base事件循环
  *      创建定时器事件做守护进程，防止事件循环退出
  */
-static void *io_workers(void *arg);
+void *io_workers(void *arg);
 
 /** 守护进程，空函数，防止IO线程的事件循环自动终止
  */
-static void io_cb(evutil_socket_t fd, short events, void *arg);
+void io_cb(evutil_socket_t fd, short events, void *arg);
 
 #endif

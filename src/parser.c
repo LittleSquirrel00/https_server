@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <http_parser.h>
+#include "parser.h"
 
 int on_message_begin(http_parser *parser) {
     printf("\n***MESSAGE BEGIN***\n\n");
