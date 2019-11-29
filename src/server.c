@@ -43,8 +43,11 @@ extern int io_thread_index;
 extern char *HOME_DIR;
 
 int main(int argc, char **argv) {
+    // 服务器配置
     BUFFER_THREAD_NUMS = get_nprocs();
     IO_THREAD_NUMS = 2;
+    HOME_DIR = "./home";
+
     Listener_Thread *listener_thread = (Listener_Thread *)malloc(sizeof(Listener_Thread));
     struct event_base *base;
     struct evconnlistener *http_listener, *https_listener;
@@ -232,7 +235,7 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
     http_parser_settings_init(&parser_set);
     parser_set.on_message_begin = on_message_begin;
     parser_set.on_url = on_url;
-    parser_set.on_status = on_status;
+    // parser_set.on_status = on_status;
     parser_set.on_header_field = on_header_field;
     parser_set.on_header_value = on_header_value;
     parser_set.on_body = on_body;
