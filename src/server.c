@@ -236,22 +236,21 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
     parser_set.on_message_begin = on_message_begin;
     parser_set.on_url = on_url;
     // parser_set.on_status = on_status;
-    parser_set.on_header_field = on_header_field;
-    parser_set.on_header_value = on_header_value;
+    // parser_set.on_header_field = on_header_field;
+    // parser_set.on_header_value = on_header_value;
     parser_set.on_body = on_body;
-    parser_set.on_headers_complete = on_headers_complete;
+    // parser_set.on_headers_complete = on_headers_complete;
     parser_set.on_message_complete = on_message_complete;
 
-    char *data;
+    char data[80 * 1024];
+    memset(data, 0, sizeof(data));
     http_parser *parser;
     parser = (http_parser *)malloc(sizeof(http_parser));
     http_parser_init(parser, HTTP_REQUEST);
     parser->data = data;
     int parser_len = http_parser_execute(parser, &parser_set, msg, len);
-
     if (parser->upgrade) {
-        /* handle new protocol */
-        // none
+        /* handle new protocol */ // none
     } else if (parser_len != len) {
         free(msg);
         free(parser);
@@ -259,9 +258,6 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
         return ;
     }
 
-    // printf("status code: %s\n", http_status_str(404));
-    // printf("method: %s\n", http_method_str(parser->method));
-    // printf("chunked: %d\n", http_body_is_final(parser));
     
     // http_should_keep_alive(parser); // keepalive & reqclose
     // http_body_is_final(parser); // chunked
@@ -271,8 +267,7 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
     short upload = 0, download = 0;
     
     // 向写缓冲区写入数据
-    if (data)
-        printf("%s\n", data);
+    // if (data) printf("%s\n", data);
     evbuffer_add_printf(output, "%s", data);    
     bufferevent_write_buffer(bev, output);
 
