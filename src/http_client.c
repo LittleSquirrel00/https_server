@@ -58,7 +58,18 @@ int main()
         printf("connect success\n");
  
     // 将数据写入缓冲区
-    char *mesg = CreateMsg(GET, NULL);
+    char *g = "GET / HTTP/1.1\r\n" 
+        "Host: www.example.com\r\n" 
+        "User-Agent: Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US; rv:1.7.6) Gecko/20050225 Firefox/1.0.1\r\n" 
+        "Connection: Keep-Alive";
+    char *p = "POST / HTTP/1.1\r\n" 
+        "Host: www.example.com\r\n" 
+        "User-Agent: Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US; rv:1.7.6) Gecko/20050225 Firefox/1.0.1\r\n"
+        "Content-Type: application/x-www-form-urlencoded\r\n"
+        "Content-Length: 40\r\n"
+        "Connection: Keep-Alive\r\n\r\n"
+        "test/";
+    char *mesg = p;
     bufferevent_write(conn, mesg, strlen(mesg));
 
     // 检测写入缓冲区数据

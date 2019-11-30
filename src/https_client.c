@@ -68,23 +68,25 @@ int main()
     evutil_make_socket_nonblocking(fd);
     struct bufferevent* conn = bufferevent_openssl_socket_new(base, fd, ssl, BUFFEREVENT_SSL_CONNECTING, BEV_OPT_CLOSE_ON_FREE);
     bufferevent_setcb(conn, server_msg_cb, NULL, event_cb, NULL);
-    bufferevent_enable(conn, EV_READ);
+    bufferevent_enable(conn, EV_READ|EV_WRITE);
     // bufferevent_set_timeouts(conn, &tv, NULL);
     // bufferevent_openssl_set_allow_dirty_shutdown(conn, 1);
     if(bufferevent_socket_connect(conn,(struct sockaddr*)&my_address,sizeof(my_address)) == 0)
         printf("connect success\n");
     // 将数据写入缓冲区
-    char *g = "GET /books/?sex=man&name=Professional HTTP/1.1\r\n" 
+    char *g = 
+        "GET / HTTP/1.1\r\n" 
         "Host: www.example.com\r\n" 
         "User-Agent: Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US; rv:1.7.6) Gecko/20050225 Firefox/1.0.1\r\n" 
-        "Connection: Keep-Alive\r\n";
-    char *p = "POST / HTTP/1.1\r\n" 
+        "Connection: Keep-Alive";
+    char *p = 
+        "POST / HTTP/1.1\r\n" 
         "Host: www.example.com\r\n" 
         "User-Agent: Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US; rv:1.7.6) Gecko/20050225 Firefox/1.0.1\r\n"
         "Content-Type: application/x-www-form-urlencoded\r\n"
         "Content-Length: 40\r\n"
         "Connection: Keep-Alive\r\n\r\n"
-        "sex=man&name=Professional\r\n";
+        "test";
     char *msg = g;
     bufferevent_write(conn, msg, strlen(msg));
 
@@ -127,19 +129,19 @@ char *CreateMsg(int msgType, char *uri) {
 }
 
 void event_cb(struct bufferevent *bev, short events, void *arg) {
-    if (events & BEV_EVENT_CONNECTED) {
-        printf("Client has successfully cliented.\n");
-        return;
-    }
-    if (events & BEV_EVENT_EOF) {
-        printf("Connection closed.\n");
-    }
-    else if (events & BEV_EVENT_ERROR) {
-        printf("Some other error.\n");
-    }
-    else if (events & BEV_EVENT_TIMEOUT) {
-        printf("Connection timeout.\n");
-    }
+    // if (events & BEV_EVENT_CONNECTED) {
+    //     printf("Client has successfully cliented.\n"); 
+    //     return;
+    // }
+    // if (events & BEV_EVENT_EOF) {
+    //     printf("Connection closed.\n");
+    // }
+    // else if (events & BEV_EVENT_ERROR) {
+    //     printf("Some other error.\n");
+    // }
+    // else if (events & BEV_EVENT_TIMEOUT) {
+    //     printf("Connection timeout.\n");
+    // }
     struct event_base *base = bufferevent_get_base(bev);
     event_base_loopexit(base, NULL);
 }

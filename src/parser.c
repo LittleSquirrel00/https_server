@@ -3,35 +3,37 @@
 #include <string.h>
 #include <time.h>
 #include <sys/stat.h>
-// #include <unistd.h>
 #include <dirent.h>
 #include <http_parser.h>
 #include "parser.h"
 
 char *HOME_DIR;
-HTTP_Response *res;
+char *status_line;
+char *header;
+char *body;
+char *req_url;
+int status_code;
+
+typedef enum {TYPE_NOTKNOWN, TYPE_DIR, TYPE_REG} filetype;
+filetype ft;
 
 void filepath_parse(char *path);
-
 void notfound();
-
 void forbidden();
-
 void header_set_server();
-
 void header_set_date();
-
 void header_set_content_type();
-
 void header_set_content_length();
+void re_res_msg(http_parser *parser);
 
 int on_message_begin(http_parser *parser) {
-    res = malloc(sizeof(res));
-    memset(res, 0, sizeof(res));
-    res->header = malloc(1024);
-    res->body = malloc(1024);
-    memset(res->header, 0, 1024);
-    memset(res->body, 0, 1024);
+    header = malloc(1024);
+    memset(header, 0, 1024);
+    body = malloc(16 * 1024);
+    memset(body, 0, 16 * 1024);
+    status_code = 0;
+    ft = TYPE_NOTKNOWN;
+    req_url = NULL;
     return 0;
 }
 
@@ -40,23 +42,22 @@ int on_url(http_parser *parser, const char *at, size_t length) {
         char *path = malloc(256);
         sprintf(path, "%s%.*s", HOME_DIR, (int)length, at);
         filepath_parse(path);
+        re_res_msg(parser);
     }
     return 0;
 }
 
-int on_status(http_parser *parser, const char *at, size_t length) {
-    return 0;
-}
-
 int on_header_field(http_parser *parser, const char *at, size_t length) {
+#ifdef DEBUG
+    printf("Field: %.*s\n", (int)length, at);
+#endif
     return 0;
 }
 
 int on_header_value(http_parser *parser, const char *at, size_t length) {
-    return 0;
-}
-
-int on_headers_complete(http_parser *parser) {
+#ifdef DEBUG
+    printf("Value: %.*s\n", (int)length, at);
+#endif
     return 0;
 }
 
@@ -65,29 +66,25 @@ int on_body(http_parser *parser, const char *at, size_t length) {
         char *path = malloc(256);
         sprintf(path, "%s/%.*s", HOME_DIR, (int)length, at);
         filepath_parse(path);
+        re_res_msg(parser);
     }
     return 0;
 }
 
-int on_message_complete(http_parser *parser) {
+void re_res_msg(http_parser *parser) {
     header_set_server();
     header_set_date();
     header_set_content_type();
     header_set_content_length();
     
-    parser->data = strcat(parser->data, res->status_line);
-    parser->data = strcat(parser->data, res->header);
+    parser->data = strcat(parser->data, status_line);
+    parser->data = strcat(parser->data, header);
     parser->data = strcat(parser->data, "\r\n");
-    parser->data = strcat(parser->data, res->body);
-    
-    // free(res->header);
-    // free(res->body);
-    free(res);
-    return 0;
+    parser->data = strcat(parser->data, body);
 }
 
 void header_set_server() {
-    res->header = strcat(res->header, "Server: HTTP-Server/0.1\r\n");
+    header = strcat(header, "Server: HTTP-Server/0.1\r\n");
 }
 
 void header_set_date() {
@@ -95,121 +92,129 @@ void header_set_date() {
     time_t now = time(0);
     struct tm tm = *gmtime(&now);
     strftime(buf, sizeof(buf), "Date: %a, %d %b %Y %H:%M:%S %Z\r\n", &tm);
-    res->header = strcat(res->header, buf);
+    header = strcat(header, buf);
 }
 
 void header_set_content_type() {
     char *mime = NULL;
-    if (res->status_code == 200) {
-        if (S_ISDIR(res->file_stat->st_mode))
-            mime="text/html";
-        else if (strstr(res->req_url, ".gif"))
-            mime="image/gif";
-        else if (strstr(res->req_url, ".jpg"))
-            mime="image/jpeg";
-        else if (strstr(res->req_url, ".png"))
-            mime="image/png";
+    if (ft == TYPE_REG) {
+        if (strstr(req_url, ".gif"))
+            mime = "image/gif";
+        else if (strstr(req_url, ".jpg"))
+            mime = "image/jpeg";
+        else if (strstr(req_url, ".png"))
+            mime = "image/png";
+        else if (strstr(req_url, ".txt"))
+            mime = "text/plain";
+        else if (strstr(req_url, ".pdf"))
+            mime = "application/pdf";
+        else if (strstr(req_url, ".exe"))
+            mime = "application/x-msdownload";
         else
-            mime="application/octet-stream";
+            mime = "application/octet-stream";
     }
     else 
         mime="text/html";
-    
+
     char ct[128];
     sprintf(ct, "Content-Type: %s; charset=utf-8\r\n", mime);
-    res->header = strcat(res->header, ct);
+    header = strcat(header, ct);
 }
 
 void header_set_content_length() {
     char content_len[128];
-    sprintf(content_len, "Content-Length: %ld\r\n", strlen(res->body));
-    res->header = strcat(res->header, content_len);
-}
-
-int on_chunk_header(http_parser *parser) {
-    return 0;
-}
-
-int on_chunk_complete(http_parser *parser) {
-    return 0;
+    sprintf(content_len, "Content-Length: %ld\r\n", strlen(body));
+    header = strcat(header, content_len);
 }
 
 void filepath_parse(char *path) {
-    res->req_url = path;
-    res->file_stat = malloc(sizeof(struct stat));
-    if (stat(path, res->file_stat) < 0) {
-        res->status_code = 404;
-        res->status_line = "HTTP/1.1 404 NOT FOUND\r\n";
+#ifdef DEBUG
+    printf("URL: %s\n", path);
+#endif
+    req_url = path;
+    struct stat st;
+    if (stat(path, &st) < 0) {
+        status_code = 404;
+        status_line = "HTTP/1.1 404 NOT FOUND\r\n";
         notfound();
     }
-    else if (!(res->file_stat->st_mode & S_IROTH)) {
-        res->status_code = 403;
-        res->status_line = "HTTP/1.1 403 FORBIDDEN\r\n";
+    else if (!(st.st_mode & S_IROTH)) {
+        status_code = 403;
+        status_line = "HTTP/1.1 403 FORBIDDEN\r\n";
         forbidden();
     }
-    else if (S_ISDIR(res->file_stat->st_mode)) {
-        res->status_code = 200;
-        res->status_line = "HTTP/1.1 200 OK\r\n";
+    else if (S_ISDIR(st.st_mode)) {
+        ft = TYPE_DIR;
+        status_code = 200;
+        status_line = "HTTP/1.1 200 OK\r\n";
         char buf[1024];
         DIR *d = opendir(path);
         struct dirent *dir;
-        res->body = strcat(res->body, "<html>\r\n");
-        res->body = strcat(res->body, "<head>\r\n");
-        res->body = strcat(res->body, "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\">\r\n");
-        sprintf(buf, "<title>Directory listing for %s</title>\r\n", path);
-        res->body = strcat(res->body, buf);
-        res->body = strcat(res->body, "</head>\r\n");
-        res->body = strcat(res->body, "<body>\r\n");
-        res->body = strcat(res->body, "<h1>Directory listing for /</h1>\r\n");
-        res->body = strcat(res->body, "<hr>\r\n");
-        res->body = strcat(res->body, "<ul>\r\n");
+        body = strcat(body, "<html>\r\n");
+        body = strcat(body, "<head>\r\n");
+        body = strcat(body, "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\">\r\n");
+        sprintf(buf, "<title>Directory listing for %s</title>\r\n", path+1);
+        body = strcat(body, buf);
+        body = strcat(body, "</head>\r\n");
+        body = strcat(body, "<body>\r\n");
+        sprintf(buf, "<h1>Directory listing for %s</h1>\r\n", path+1);
+        body = strcat(body, buf);
+        body = strcat(body, "<hr>\r\n");
+        body = strcat(body, "<ul>\r\n");
         while ((dir = readdir(d)) != NULL) {
-            sprintf(buf, "<li><a href=\"%s\">%s</a></li>\r\n", dir->d_name, dir->d_name);
-            res->body = strcat(res->body, buf);
+            if (dir->d_type == DT_DIR) {
+                if (!strcmp(dir->d_name , ".") || !strcmp(dir->d_name, "..")) continue;
+                sprintf(buf, "<li><a href=\"%s/\">%s/</a></li>\r\n", dir->d_name, dir->d_name);
+                body = strcat(body, buf);
+            }   
+            else if (dir->d_type == DT_REG) {
+                sprintf(buf, "<li><a href=\"%s\">%s</a></li>\r\n", dir->d_name, dir->d_name);
+                body = strcat(body, buf);
+            }    
         }
         closedir(d);
-        res->body = strcat(res->body, "</ul>\r\n");
-        res->body = strcat(res->body, "<hr>\r\n");
-        res->body = strcat(res->body, "</body>\r\n");
-        res->body = strcat(res->body, "</html>\r\n");
+        body = strcat(body, "</ul>\r\n");
+        body = strcat(body, "<hr>\r\n");
+        body = strcat(body, "</body>\r\n");
+        body = strcat(body, "</html>\r\n");
     }
     else {
-        res->status_code = 200;
-        res->status_line = "HTTP/1.1 200 OK\r\n";
-        // FILE *fp = fopen(path, "r");
-        // fread(fp, );
-        // int fp = open(path, "r");
-        // int size = read(fp, );
-        // close(fp);
+        ft = TYPE_REG;
+        status_code = 200;
+        status_line = "HTTP/1.1 200 OK\r\n";
+
+        FILE *fp = fopen(path, "r");
+        int size = fread(body, 1, 16 * 1024, fp);
+        fclose(fp);
     }
 }
 
 void notfound() {
-    res->body = strcat(res->body, "<html>\r\n");
-    res->body = strcat(res->body, "\t<head>\r\n");
-    res->body = strcat(res->body, "\t\t<meta http-equiv=\"Content-Type\" content=\"text/html;charset=utf-8\">\r\n");
-    res->body = strcat(res->body, "\t\t<title>Error response</title>\r\n");
-    res->body = strcat(res->body, "\t</head>\r\n");
-    res->body = strcat(res->body, "\t<body>\r\n");
-    res->body = strcat(res->body, "\t\t<h1>Error response</h1>\r\n");
-    res->body = strcat(res->body, "\t\t<p>Error code: 404</p>\r\n");
-    res->body = strcat(res->body, "\t\t<p>Message: File not found.</p>\r\n");
-    res->body = strcat(res->body, "\t\t<p>Error code explanation: HTTPStatus.NOT_FOUND - Nothing matches the given URI.</p>\r\n");
-    res->body = strcat(res->body, "\t</body>\r\n");
-    res->body = strcat(res->body, "</html>\r\n");
+    body = strcat(body, "<html>\r\n");
+    body = strcat(body, "\t<head>\r\n");
+    body = strcat(body, "\t\t<meta http-equiv=\"Content-Type\" content=\"text/html;charset=utf-8\">\r\n");
+    body = strcat(body, "\t\t<title>Error response</title>\r\n");
+    body = strcat(body, "\t</head>\r\n");
+    body = strcat(body, "\t<body>\r\n");
+    body = strcat(body, "\t\t<h1>Error response</h1>\r\n");
+    body = strcat(body, "\t\t<p>Error code: 404</p>\r\n");
+    body = strcat(body, "\t\t<p>Message: File not found.</p>\r\n");
+    body = strcat(body, "\t\t<p>Error code explanation: HTTPStatus.NOT_FOUND - Nothing matches the given URI.</p>\r\n");
+    body = strcat(body, "\t</body>\r\n");
+    body = strcat(body, "</html>\r\n");
 }
 
 void forbidden() {
-    res->body = strcat(res->body, "<html>\r\n");
-    res->body = strcat(res->body, "\t<head>\r\n");
-    res->body = strcat(res->body, "\t\t<meta http-equiv=\"Content-Type\" content=\"text/html;charset=utf-8\">\r\n");
-    res->body = strcat(res->body, "\t\t<title>Error response</title>\r\n");
-    res->body = strcat(res->body, "\t</head>\r\n");
-    res->body = strcat(res->body, "\t<body>\r\n");
-    res->body = strcat(res->body, "\t\t<h1>Error response</h1>\r\n");
-    res->body = strcat(res->body, "\t\t<p>Error code: 403</p>\r\n");
-    res->body = strcat(res->body, "\t\t<p>Message: Forbidden.</p>\r\n");
-    res->body = strcat(res->body, "\t\t<p>Error code explanation: HTTPStatus.Forbidden.</p>\r\n");
-    res->body = strcat(res->body, "\t</body>\r\n");
-    res->body = strcat(res->body, "</html>\r\n");
+    body = strcat(body, "<html>\r\n");
+    body = strcat(body, "\t<head>\r\n");
+    body = strcat(body, "\t\t<meta http-equiv=\"Content-Type\" content=\"text/html;charset=utf-8\">\r\n");
+    body = strcat(body, "\t\t<title>Error response</title>\r\n");
+    body = strcat(body, "\t</head>\r\n");
+    body = strcat(body, "\t<body>\r\n");
+    body = strcat(body, "\t\t<h1>Error response</h1>\r\n");
+    body = strcat(body, "\t\t<p>Error code: 403</p>\r\n");
+    body = strcat(body, "\t\t<p>Message: Forbidden.</p>\r\n");
+    body = strcat(body, "\t\t<p>Error code explanation: HTTPStatus.Forbidden.</p>\r\n");
+    body = strcat(body, "\t</body>\r\n");
+    body = strcat(body, "</html>\r\n");
 }

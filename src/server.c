@@ -230,17 +230,22 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
     memset(msg, 0, (len + 1) * sizeof(char));
     int size = evbuffer_remove(input, msg, len);
 
+#ifdef DEBUG
+    printf("*********Recv %d bytes msg**********\n", len);
+    printf("%s\n", msg);
+    printf("************************************\n");
+#endif
+    
     // HTTP解析
     http_parser_settings parser_set;
     http_parser_settings_init(&parser_set);
     parser_set.on_message_begin = on_message_begin;
     parser_set.on_url = on_url;
-    // parser_set.on_status = on_status;
-    // parser_set.on_header_field = on_header_field;
-    // parser_set.on_header_value = on_header_value;
     parser_set.on_body = on_body;
-    // parser_set.on_headers_complete = on_headers_complete;
-    parser_set.on_message_complete = on_message_complete;
+#ifdef DEBUG
+    parser_set.on_header_field = on_header_field;
+    parser_set.on_header_value = on_header_value;
+#endif
 
     char data[80 * 1024];
     memset(data, 0, sizeof(data));
@@ -251,29 +256,31 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
     int parser_len = http_parser_execute(parser, &parser_set, msg, len);
     if (parser->upgrade) {
         /* handle new protocol */ // none
-    } else if (parser_len != len) {
+    } else if (parser_len != len) {  
+#ifdef DEBUG
+    printf("*************Parser msg*************\n");
+    printf("Parsed %d bytes msg, total %d msg\n", parser_len, len);
+    printf("************************************\n");
+#endif
         free(msg);
         free(parser);
         bufferevent_free(bev);
         return ;
     }
 
-    
-    // http_should_keep_alive(parser); // keepalive & reqclose
-    // http_body_is_final(parser); // chunked
-    short keep_alive = parser->flags & F_CONNECTION_KEEP_ALIVE;
-    short req_close = parser->flags & F_CONNECTION_CLOSE;
-    short chunked = parser->flags & F_CHUNKED; 
     short upload = 0, download = 0;
     
     // 向写缓冲区写入数据
-    // if (data) printf("%s\n", data);
+#ifdef DEBUG
+    printf("*********Send %ld bytes msg**********\n", strlen(data));
+    if (strlen(data)) printf("%s\n", data);
+    printf("************************************\n");
+#endif
     evbuffer_add_printf(output, "%s", data);    
     bufferevent_write_buffer(bev, output);
 
     // 添加定时器事件实现分块传输
-    // if (!http_body_is_final(parser)) {}
-    if (keep_alive && !req_close && chunked) {
+    if (!http_body_is_final(parser)) {
         HTTP_Chunk *chunk = (HTTP_Chunk *)malloc(sizeof(HTTP_Chunk));
         struct event_base *base = bufferevent_get_base(bev);
         struct event *timer = event_new(base, -1, EV_TIMEOUT, http_chunk_cb, chunk);
@@ -310,8 +317,6 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
 }
 
 static void event_cb(struct bufferevent *bev, short events, void *ctx) {
-    if (events & BEV_EVENT_ERROR)
-        perror("Error from bufferevent");
     if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR | BEV_EVENT_TIMEOUT)) {
         bufferevent_free(bev);
     }

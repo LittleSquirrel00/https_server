@@ -1,13 +1,23 @@
-.PHONY:clean
+VPATH = ./src:./obj
+CC = gcc
+CFLAGS = -lssl -lcrypto -lpthread -levent -levent_openssl -levent_pthreads -lhttp_parser -DDEBUG
 
-BINRARY_DIR=./bin/
-SRC_DIR=./src/
-TEST_DIR=./test/
+ALL : bin/server bin/http_client bin/https_client
+.PHONY : ALL
 
-default:
-	gcc -O2 ${SRC_DIR}sthread.c ${SRC_DIR}parser.c ${SRC_DIR}server.c -o ${BINRARY_DIR}server -lssl -lcrypto -lpthread -levent -levent_openssl -levent_pthreads -lhttp_parser
-	gcc -O2 ${SRC_DIR}http_client.c -o ${BINRARY_DIR}http_client -lssl -lcrypto -lpthread -levent -levent_openssl -levent_pthreads
-	gcc -O2 ${SRC_DIR}https_client.c -o ${BINRARY_DIR}https_client -lssl -lcrypto -lpthread -levent -levent_openssl -levent_pthreads
-	# gcc -O2 ${TEST_DIR}test.c -o ${BINRARY_DIR}test -lhttp_parser
+bin/server : obj/server.o obj/sthread.o obj/parser.o
+	$(CC) -o $@ $^ $(CFLAGS)
+
+bin/http_client : obj/http_client.o
+	$(CC) -o $@ $^ $(CFLAGS)
+
+bin/https_client : obj/https_client.o
+	$(CC) -o $@ $^ $(CFLAGS)
+
+obj/%.o: src/%.c
+	$(CC) -c -o $@ $< $(CFLAGS)
+
+.PHONY : clean
+
 clean:
-	rm ${BINRARY_DIR}*
+	rm ./bin/* ./obj/*.o
