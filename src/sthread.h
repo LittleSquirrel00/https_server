@@ -1,6 +1,9 @@
 #ifndef STHREAD_H_DEFINED_
 #define STHREAD_H_DEFINDED_
 
+#include <http_parser.h>
+#include "parser.h"
+
 // bufferevent线程参数
 typedef struct {
     pthread_t tid;
@@ -18,9 +21,15 @@ typedef struct {
 typedef struct {
     pthread_t tid;
     struct event_base *base;
-    struct evbuffer *evb;
-    Ack_Data *data;
+    struct event *io_event;
 } IO_Thread;
+
+typedef struct {
+    struct bufferevent *bev;
+    Ack_Data *data;
+    struct event *ev;
+    struct timeval tv;
+} Thread_Argv;
 
 /** 创建bufferevent的线程池，用于处理SSL连接和读写数据
  *  实现：

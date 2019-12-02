@@ -65,7 +65,7 @@ void *io_workers(void *arg) {
     IO_Thread *me = (IO_Thread *)arg;
     me->base = event_base_new();
     me->tid = pthread_self();
-    me->evb = NULL;
+    me->io_event = NULL;
     struct event *iod = event_new(me->base, -1, EV_TIMEOUT|EV_PERSIST, io_cb, me);
     struct timeval tv;
     evutil_timerclear(&tv);

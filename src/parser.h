@@ -23,6 +23,7 @@ typedef struct {
     char *url_argv;
 
     struct stat *st;
+    FILE *fp;
     
     char *content_length;
     char *content_type;
@@ -51,5 +52,9 @@ int on_message_complete(http_parser *parser);
 int on_chunk_header(http_parser *parser);
 
 int on_chunk_complete(http_parser *parser);
+
+int http_download(Ack_Data *data);
+
+int http_chunk(Ack_Data *data);
 
 #endif
