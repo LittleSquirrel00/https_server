@@ -58,18 +58,30 @@ int main()
         printf("connect success\n");
  
     // 将数据写入缓冲区
-    char *g = "GET / HTTP/1.1\r\n" 
+    char *g = "GET /?id=100&op=bind HTTP/1.1\r\n" 
         "Host: www.example.com\r\n" 
         "User-Agent: Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US; rv:1.7.6) Gecko/20050225 Firefox/1.0.1\r\n" 
-        "Connection: Keep-Alive";
-    char *p = "POST / HTTP/1.1\r\n" 
+        "Connection: Keep-Alive\r\n"
+        "Content-Length: 0";
+    char *p = "POST /test/t.txt HTTP/1.1\r\n" 
+        "Host: www.example.com\r\n" 
+        "User-Agent: Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US; rv:1.7.6) Gecko/20050225 Firefox/1.0.1\r\n"
+        "Content-Type: application/x-www-form-urlencoded; boundary=ZnGpDtePMx0KrHh_G0X99Yef9r8JZsRJSXC\r\n"
+        "Content-Length: 294\r\n"
+        "Connection: Keep-Alive\r\n\r\n"
+        "--ZnGpDtePMx0KrHh_G0X99Yef9r8JZsRJSXC\r\n"
+        "Content-Disposition: form-data;name=\"txt\"\r\n"
+        "Content-Type: text/plain; charset=UTF-8\r\n"
+        "Content-Transfer-Encoding: 8bit\r\n"
+        "abcdefghijklmn\r\n"
+        "--ZnGpDtePMx0KrHh_G0X99Yef9r8JZsRJSXC";
+    char *p2 = "POST / HTTP/1.1\r\n" 
         "Host: www.example.com\r\n" 
         "User-Agent: Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US; rv:1.7.6) Gecko/20050225 Firefox/1.0.1\r\n"
         "Content-Type: application/x-www-form-urlencoded\r\n"
-        "Content-Length: 40\r\n"
-        "Connection: Keep-Alive\r\n\r\n"
-        "test/";
-    char *mesg = p;
+        "Content-Length: 0\r\n"
+        "Connection: Keep-Alive";
+    char *mesg = p2;
     bufferevent_write(conn, mesg, strlen(mesg));
 
     // 检测写入缓冲区数据

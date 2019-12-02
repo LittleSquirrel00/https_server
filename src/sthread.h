@@ -19,6 +19,7 @@ typedef struct {
     pthread_t tid;
     struct event_base *base;
     struct evbuffer *evb;
+    Ack_Data *data;
 } IO_Thread;
 
 /** 创建bufferevent的线程池，用于处理SSL连接和读写数据

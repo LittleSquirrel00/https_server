@@ -40,13 +40,12 @@ extern IO_Thread *io_threads;
 extern int IO_THREAD_NUMS;
 extern int io_thread_index;
 
-extern char *HOME_DIR;
+static char *HOME_DIR = "./home";
 
 int main(int argc, char **argv) {
     // 服务器配置
     BUFFER_THREAD_NUMS = get_nprocs();
     IO_THREAD_NUMS = 2;
-    HOME_DIR = "./home";
 
     Listener_Thread *listener_thread = (Listener_Thread *)malloc(sizeof(Listener_Thread));
     struct event_base *base;
@@ -230,57 +229,40 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
     memset(msg, 0, (len + 1) * sizeof(char));
     int size = evbuffer_remove(input, msg, len);
 
-#ifdef DEBUG
-    printf("*********Recv %d bytes msg**********\n", len);
-    printf("%s\n", msg);
-    printf("************************************\n");
-#endif
-    
     // HTTP解析
     http_parser_settings parser_set;
     http_parser_settings_init(&parser_set);
     parser_set.on_message_begin = on_message_begin;
     parser_set.on_url = on_url;
     parser_set.on_body = on_body;
-#ifdef DEBUG
-    parser_set.on_header_field = on_header_field;
-    parser_set.on_header_value = on_header_value;
-#endif
 
-    char data[80 * 1024];
-    memset(data, 0, sizeof(data));
-    http_parser *parser;
-    parser = (http_parser *)malloc(sizeof(http_parser));
+    http_parser *parser = (http_parser *)malloc(sizeof(http_parser));
     http_parser_init(parser, HTTP_REQUEST);
+    
+    Ack_Data *data = malloc(sizeof(Ack_Data));
+    memset(data, 0, sizeof(Ack_Data));
+    data->home = HOME_DIR;
     parser->data = data;
+    
     int parser_len = http_parser_execute(parser, &parser_set, msg, len);
-    if (parser->upgrade) {
-        /* handle new protocol */ // none
-    } else if (parser_len != len) {  
-#ifdef DEBUG
-    printf("*************Parser msg*************\n");
-    printf("Parsed %d bytes msg, total %d msg\n", parser_len, len);
-    printf("************************************\n");
-#endif
+    
+    if (parser_len != len) {  
         free(msg);
         free(parser);
         bufferevent_free(bev);
         return ;
     }
 
-    short upload = 0, download = 0;
-    
-    // 向写缓冲区写入数据
-#ifdef DEBUG
-    printf("*********Send %ld bytes msg**********\n", strlen(data));
-    if (strlen(data)) printf("%s\n", data);
-    printf("************************************\n");
-#endif
-    evbuffer_add_printf(output, "%s", data);    
-    bufferevent_write_buffer(bev, output);
-
-    // 添加定时器事件实现分块传输
-    if (!http_body_is_final(parser)) {
+    if (data->load == DOWNLOAD) {
+        struct event_base *base = io_threads[io_thread_index].base;
+        io_thread_index = (io_thread_index + 1) % IO_THREAD_NUMS;
+        struct event * io_event = event_new(base, -1, EV_TIMEOUT|EV_PERSIST, io_event_cb, bev);
+        struct timeval tv;
+        evutil_timerclear(&tv);
+        tv.tv_usec = 0;
+        evtimer_add(io_event, &tv);
+    }
+    else if (data->load == CHUNK) {
         HTTP_Chunk *chunk = (HTTP_Chunk *)malloc(sizeof(HTTP_Chunk));
         struct event_base *base = bufferevent_get_base(bev);
         struct event *timer = event_new(base, -1, EV_TIMEOUT, http_chunk_cb, chunk);
@@ -294,22 +276,15 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
         tv->tv_usec = 1000 * 100; // 100ms
         evtimer_add(timer, tv);
     }
-    else {
-        free(msg);
-    }
 
-    if (upload || download) {
-        struct event_base *base = io_threads[io_thread_index].base;
-        io_thread_index = (io_thread_index + 1) % IO_THREAD_NUMS;
-        struct event * io_event = event_new(base, -1, EV_TIMEOUT|EV_PERSIST, io_event_cb, bev);
-        struct timeval tv;
-        evutil_timerclear(&tv);
-        tv.tv_usec = 0;
-        evtimer_add(io_event, &tv);
-    }
+    // 向写缓冲区写入数据
+    evbuffer_add_printf(output, "%s", data->status_line);
+    evbuffer_add_printf(output, "%s\r\n", data->header);
+    if (data->body) evbuffer_add_printf(output, "%s", data->body);  
+
+    bufferevent_write_buffer(bev, output);
 
     evbuffer_free(output);
-
     // 非持久连接
     if (!http_should_keep_alive(parser)) {
         bufferevent_free(bev);
