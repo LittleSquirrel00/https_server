@@ -8,9 +8,17 @@ typedef struct {
     char *argv;
 } Ack_URL;
 
-#define UNSET "unset"
+#define SSET "set"
+#define SUNSET "unset"
+#define ISET -1
+#define IUNSET -2
 
 typedef enum {GET, CHUNK, UPLOAD, DOWNLOAD} Down_Up_Load;
+
+#define URL_SIZE 256
+#define BUFFER_SIZE 512
+#define HEADER_SIZE 1024
+#define BLOCK_SIZE 256 * 1024
 
 typedef struct {
     char *status_line;
@@ -24,8 +32,9 @@ typedef struct {
 
     struct stat *st;
     FILE *fp;
+    int fd;
     
-    char *content_length;
+    int content_length;
     char *content_type;
     char *boundary;
     int status_code;
@@ -53,8 +62,14 @@ int on_chunk_header(http_parser *parser);
 
 int on_chunk_complete(http_parser *parser);
 
-int http_download(Ack_Data *data);
+int http_upload(http_parser *parser);
 
-int http_chunk(Ack_Data *data);
+int http_download(http_parser *parser);
+
+int http_chunk(http_parser *parser);
+
+void data_init(Ack_Data *data);
+
+void data_free(Ack_Data *data);
 
 #endif

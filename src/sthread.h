@@ -2,7 +2,6 @@
 #define STHREAD_H_DEFINDED_
 
 #include <http_parser.h>
-#include "parser.h"
 
 // bufferevent线程参数
 typedef struct {
@@ -26,9 +25,10 @@ typedef struct {
 
 typedef struct {
     struct bufferevent *bev;
-    Ack_Data *data;
+    http_parser *parser;
     struct event *ev;
     struct timeval tv;
+    int cnt;
 } Thread_Argv;
 
 /** 创建bufferevent的线程池，用于处理SSL连接和读写数据

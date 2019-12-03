@@ -153,7 +153,7 @@ static void http_accept_cb(struct evconnlistener *listener, evutil_socket_t fd, 
     // 设置超时断开连接
     struct timeval *tv = (struct timeval *)malloc(sizeof(struct timeval));
     evutil_timerclear(tv);
-    tv->tv_sec = 2;
+    tv->tv_sec = 5;
     bufferevent_set_timeouts(bev, tv, NULL);
 }
 
@@ -176,7 +176,7 @@ static void https_accept_cb(struct evconnlistener *listener, evutil_socket_t fd,
     // 设置超时断开连接    
     struct timeval *tv = (struct timeval *)malloc(sizeof(struct timeval));
     evutil_timerclear(tv);
-    tv->tv_sec = 2;
+    tv->tv_sec = 5;
     bufferevent_set_timeouts(bev, tv, NULL);
 }
 
@@ -188,62 +188,79 @@ static void accept_error_cb(struct evconnlistener *listener, void *ctx) {
     event_base_loopexit(base, NULL);
 }
 
+/// TODO: bug to solve
 static void http_chunk_cb(evutil_socket_t fd, short events, void *arg) {
     Thread_Argv *argv = (Thread_Argv *)arg;
     struct bufferevent *bev = argv->bev;
-    Ack_Data *data = argv->data;
-    int finish = http_chunk(data);
+    http_parser *parser = argv->parser;
+    Ack_Data *data = (Ack_Data *)parser->data;
+    
+    int finish = http_chunk(parser);
 
-    struct evbuffer *output = evbuffer_new();
-    evbuffer_add_printf(output, "%s", data->status_line);
-    evbuffer_add_printf(output, "%s\r\n", data->header);
+    struct evbuffer *output = bufferevent_get_output(bev);
     evbuffer_add_printf(output, "%s", data->body);  
     bufferevent_write_buffer(bev, output);
 
     if (finish) {
-        bufferevent_free(bev);
+        data_free(data);
         free(data);
+        free(parser);
         free(arg);
+        event_del(argv->ev);
     }
-    else {
-        struct timeval tv;
-        evutil_timerclear(&tv);
-        tv.tv_usec = 1000 * 100;
-        evtimer_add(argv->ev, &tv);
-    }
-    free(output);
 }
 
-static void io_event_cb(evutil_socket_t fd, short events, void *arg) {
+static void io_upload_cb(evutil_socket_t fd, short events, void *arg) {
     Thread_Argv *argv = (Thread_Argv *)arg;
     struct bufferevent *bev = argv->bev;
-    Ack_Data *data = argv->data;
-    int finish = http_download(data);
+    http_parser *parser = argv->parser;
+    Ack_Data *data = (Ack_Data *)parser->data;
+    
+    struct evbuffer *input = bufferevent_get_input(bev);
+    int len = evbuffer_get_length(input);
+    if (len > 0) {
+        memset(data->body, 0, BLOCK_SIZE);
+        int size = evbuffer_remove(input, data->body, len);
+        if (http_upload(parser)) {
+            struct evbuffer *output = bufferevent_get_output(bev);
+            evbuffer_add_printf(output, "%s", data->status_line);
+            evbuffer_add_printf(output, "%s", data->header);
+            bufferevent_write_buffer(bev, output);
 
-    struct evbuffer *output = evbuffer_new();
-    evbuffer_add_printf(output, "%s", data->status_line);
-    evbuffer_add_printf(output, "%s\r\n", data->header);
+            data_free(data);
+            free(data);
+            free(parser);
+            free(arg);
+            event_del(argv->ev);
+        }
+    }
+}
+
+static void io_download_cb(evutil_socket_t fd, short events, void *arg) {
+    Thread_Argv *argv = (Thread_Argv *)arg;
+    struct bufferevent *bev = argv->bev;
+    http_parser *parser = argv->parser;
+    Ack_Data *data = (Ack_Data *)parser->data;
+    
+    int finish = http_download(parser);
+
+    struct evbuffer *output = bufferevent_get_output(bev);
     evbuffer_add_printf(output, "%s", data->body);  
     bufferevent_write_buffer(bev, output);
 
     if (finish) {
-        bufferevent_free(bev);
+        data_free(data);
         free(data);
+        free(parser);
         free(arg);
+        event_del(argv->ev);
     }
-    else {
-        struct timeval tv;
-        evutil_timerclear(&tv);
-        tv.tv_usec = 0;
-        evtimer_add(argv->ev, &tv);
-    }
-    free(output);
 }
 
 static void read_cb(struct bufferevent *bev, void *ctx) {
     // 从读缓冲区取出数据
     struct evbuffer *input = bufferevent_get_input(bev);
-    struct evbuffer *output = evbuffer_new();
+    struct evbuffer *output = bufferevent_get_output(bev);
     int len = evbuffer_get_length(input);
     char *msg = (char *)malloc((len + 1) * sizeof(char));
     memset(msg, 0, (len + 1) * sizeof(char));
@@ -254,6 +271,8 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
     http_parser_settings_init(&parser_set);
     parser_set.on_message_begin = on_message_begin;
     parser_set.on_url = on_url;
+    parser_set.on_header_field = on_header_field;
+    parser_set.on_header_value = on_header_value;
     parser_set.on_body = on_body;
 
     http_parser *parser = (http_parser *)malloc(sizeof(http_parser));
@@ -268,48 +287,67 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
     
     if (parser_len != len) {  
         free(msg);
+        free(data);
         free(parser);
         bufferevent_free(bev);
         return ;
     }
 
+    evbuffer_add_printf(output, "%s", data->status_line);
+    evbuffer_add_printf(output, "%s\r\n", data->header);
+    if (strlen(data->body)) evbuffer_add_printf(output, "%s", data->body);  
+    bufferevent_write_buffer(bev, output);
+
     if (data->load == DOWNLOAD) {
         Thread_Argv *argv = (Thread_Argv *)malloc(sizeof(Thread_Argv));
         argv->bev = bev;
-        argv->data = data;
+        argv->parser = parser;
+        argv->cnt = 1;
 
         struct event_base *base = io_threads[io_thread_index].base;
         io_thread_index = (io_thread_index + 1) % IO_THREAD_NUMS;
-        struct event * io_event = event_new(base, -1, EV_TIMEOUT|EV_PERSIST, io_event_cb, argv);
+        struct event * io_event = event_new(base, -1, EV_TIMEOUT|EV_PERSIST, io_download_cb, argv);
         io_threads[io_thread_index].io_event = io_event;
+
         struct timeval tv;
         evutil_timerclear(&tv);
-        tv.tv_usec = 0;
+        tv.tv_usec = 100;
         evtimer_add(io_event, &tv);
+        argv->ev = io_event;
     }
     else if (data->load == CHUNK) {
         Thread_Argv *argv = (Thread_Argv *)malloc(sizeof(Thread_Argv));
-        argv->data = data;
+        argv->parser = parser;
         argv->bev = bev;
-        struct event_base *base = bufferevent_get_base(bev);
-        struct event *timer = event_new(base, -1, EV_TIMEOUT, http_chunk_cb, argv);
-        argv->ev = timer;
+        argv->cnt = 1;
 
-        // 定时器
-        struct timeval *tv = (struct timeval *)malloc(sizeof(struct timeval));
-        evutil_timerclear(tv);
-        tv->tv_usec = 1000 * 100; // 100ms
-        evtimer_add(timer, tv);
+        struct event_base *base = bufferevent_get_base(bev);
+        struct event *timer = event_new(base, -1, EV_TIMEOUT|EV_PERSIST, http_chunk_cb, argv);
+        
+        struct timeval tv;
+        evutil_timerclear(&tv);
+        tv.tv_usec = 100 * 1000;
+        evtimer_add(timer, &tv);
+        argv->ev = timer;
+    }
+    else if (data->load == UPLOAD) {
+        Thread_Argv *argv = (Thread_Argv *)malloc(sizeof(Thread_Argv));
+        argv->bev = bev;
+        argv->parser = parser;
+        argv->cnt = 1;
+
+        struct event_base *base = io_threads[io_thread_index].base;
+        io_thread_index = (io_thread_index + 1) % IO_THREAD_NUMS;
+        struct event * io_event = event_new(base, -1, EV_TIMEOUT|EV_PERSIST, io_upload_cb, argv);
+        io_threads[io_thread_index].io_event = io_event;
+
+        struct timeval tv;
+        evutil_timerclear(&tv);
+        tv.tv_usec = 100;
+        evtimer_add(io_event, &tv);
+        argv->ev = io_event;
     }
 
-    // 向写缓冲区写入数据
-    evbuffer_add_printf(output, "%s", data->status_line);
-    evbuffer_add_printf(output, "%s\r\n", data->header);
-    if (data->body) evbuffer_add_printf(output, "%s", data->body);  
-
-    bufferevent_write_buffer(bev, output);
-
-    evbuffer_free(output);
     // 非持久连接
     if (!http_should_keep_alive(parser)) {
         bufferevent_free(bev);
