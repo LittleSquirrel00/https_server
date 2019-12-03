@@ -9,56 +9,31 @@
 #include <dirent.h>
 #include <http_parser.h>
 #include "parser.h"
+#include "html.h"
 
-void filepath_parse(http_parser *parser);
-void notfound(http_parser *parser);
-void forbidden(http_parser *parser);
-void mkheader(http_parser *parser);
-int ischunk(char *path);
-
+/***************************************************/
 int on_message_begin(http_parser *parser) {
     Ack_Data *data = parser->data;
-    data->load = GET;
+    data->act = UNACTION;
     data_init(parser->data);
     data->content_length = IUNSET;
     data->fd = -1;
+    data->status_code = 200;
     return 0;
-}
-
-void data_init(Ack_Data *data) {
-    data->header = malloc(HEADER_SIZE);
-    data->body = malloc(BLOCK_SIZE);
-    data->url = malloc(URL_SIZE);
-    data->path = malloc(URL_SIZE);
-}
-
-void data_free(Ack_Data *data) {
-    free(data->header);
-    free(data->body);
-    free(data->url);
-    free(data->path);
-    free(data->url);
 }
 
 int on_url(http_parser *parser, const char *at, size_t length) { 
     Ack_Data *data = (Ack_Data *)parser->data;
-    memset(data->url, 0, URL_SIZE);
     memset(data->path, 0, URL_SIZE);
+    sprintf(data->path, "%s%.*s", data->home, (int)length, at);
     if (HTTP_GET == parser->method) {
-        sprintf(data->url, "%.*s", (int)length, at);
-        if (data->url_argv = strchr(data->url, '?')) {
-            sprintf(data->path, "%s%.*s", data->home, 
-                (int)(data->url_argv - data->url), data->url);
+        if (data->url_argv = strchr(data->path, '?')) {
+            *(data->url_argv) = '\0';
             data->url_argv++;
+            // argv_parse
         }
-        else {
-            sprintf(data->path, "%s%.*s", data->home, (int)length, at);
-        }
-        filepath_parse(parser);
+        path_parse(parser);
         mkheader(parser);
-    }
-    else if (HTTP_POST == parser->method) {
-        sprintf(data->path, "%s%.*s", data->home, (int)length, at);
     }
     return 0;
 }
@@ -90,11 +65,10 @@ int on_header_value(http_parser *parser, const char *at, size_t length) {
     }
     else if (data->content_length == ISET) {
         char tmp[32];
-        memset(tmp, 0, sizeof(tmp));
         sprintf(tmp, "%.*s", (int)length, at);
         data->content_length = atoi(tmp);
         if (!data->content_length) {
-            filepath_parse(parser);
+            path_parse(parser);
             mkheader(parser);
         }
     }
@@ -104,43 +78,75 @@ int on_header_value(http_parser *parser, const char *at, size_t length) {
 int on_body(http_parser *parser, const char *at, size_t length) {
     Ack_Data *data = (Ack_Data *)parser->data;
     if (!data->boundary) {
-        filepath_parse(parser);
+        path_parse(parser);
         mkheader(parser);
     }
     else {
-        data->load = UPLOAD;
-        FILE *fp = fopen(data->path, "ab");
-        int len = strlen(data->boundary);
-        char *begin = strstr(at, data->boundary) + 1;
-        char *end = strstr(begin, data->boundary) + 1;
-        while (end) {
-            for (int i = 0; i < 4; i++)
-                begin = strchr(begin, '\n') + 1;
-            int size = fwrite(begin, 1, (int)(end - 5 -  begin), fp);
-            end = strstr(end, data->boundary);
-        }
-        fclose(fp);
+        sprintf(data->body, "%.*s", (int)length, at);
 
-        data->status_code = 200;
-        data->status_line = "HTTP/1.1 200 OK\r\n";
-        mkheader(parser);
+        char *fbegin = strstr(data->body, "filename=") + 10;
+        char *fend = strstr(fbegin, "\"");
+        data->filename = malloc(128);
+        strcpy(data->filename, data->path);
+        strncat(data->filename, fbegin, (int)(fend - fbegin));
+        path_parse(parser);
+        if (data->status_code != 200) {
+            mkheader(parser);
+            data->act = ERROR;
+        }
+        else {
+            if (length <= data->content_length) {
+                data->act = PUSH_FILE;
+                post_file(parser);
+            }
+            else {
+                data->act = UPLOAD_FILE;
+            }
+        }
     }
     return 0;
+}
+
+/***************************************************/
+void data_init(Ack_Data *data) {
+    data->header = malloc(HEADER_SIZE);
+    data->body = malloc(BLOCK_SIZE);
+    data->path = malloc(URL_SIZE);
+}
+
+void data_free(Ack_Data *data) {
+    free(data->header);
+    free(data->body);
+    free(data->path);
 }
 
 void mkheader(http_parser *parser) {
     Ack_Data *data = (Ack_Data *)parser->data;
     memset(data->header, 0, HEADER_SIZE);
-    data->header = strcat(data->header, "Server: HTTP-Server/0.1\r\n");
+    header_set_server(data->header);
+    header_set_date(data->header);
+    header_set_content_type(data->header, parser);
+    header_set_content_length(data->header, parser);
+    header_set_chunked(data->header, parser);   
+    header_set_connection(data->header, parser);
+}
 
-    char buf[BUFFER_SIZE];
+static void header_set_server(char *header) {
+    strcat(header, "Server: HTTP-Server/0.1\r\n");
+}
+
+static void header_set_date(char *header) {
     time_t now = time(0);
     struct tm tm = *gmtime(&now);
-    strftime(buf, sizeof(buf), "Date: %a, %d %b %Y %H:%M:%S %Z\r\n", &tm);
-    data->header = strcat(data->header, buf);
-    
+    char buf[BUFFER_SIZE];
+    strftime(buf, BUFFER_SIZE, "Date: %a, %d %b %Y %H:%M:%S %Z\r\n", &tm);
+    strcat(header, buf);
+}
+
+static void header_set_content_type(char *header, http_parser *parser) {
+    Ack_Data  *data = parser->data;
     char *mime = NULL;
-    if (data->load == DOWNLOAD) {
+    if (data->act == DOWNLOAD_FILE) {
         mime = "application/octet-stream";
     }
     else if (S_ISREG(data->st->st_mode)) {
@@ -162,154 +168,171 @@ void mkheader(http_parser *parser) {
     else 
         mime="text/html";
 
-    char ct[128];
+    char ct[BUFFER_SIZE];
     sprintf(ct, "Content-Type: %s; charset=utf-8\r\n", mime);
-    data->header = strcat(data->header, ct);
-
-    if (data->load == CHUNK) 
-        data->header = strcat(data->header, "Transfer-Encoding: chunked\r\n");    
-    else {
-        char content_length[128];
-        if (data->load == DOWNLOAD) {
-            sprintf(content_length, "Content-Length: %ld\r\n", data->st->st_size);
-        }
-        else if (!data->body)
-            sprintf(content_length, "Content-Length: 0\r\n");
-        else 
-            sprintf(content_length, "Content-Length: %ld\r\n", strlen(data->body));
-
-        data->header = strcat(data->header, content_length);
-    }
-
-    if (data->load == DOWNLOAD || data->load == CHUNK || http_should_keep_alive(parser))
-        data->header = strcat(data->header, "Connection: keep-alive\r\n");
-    else 
-        data->header = strcat(data->header, "Connection: Close\r\n");
+    strcat(header, ct);
 }
 
-void filepath_parse(http_parser *parser) {
-    Ack_Data *data = (Ack_Data *)parser->data;
+static void header_set_content_length(char *header, http_parser *parser) {
+    Ack_Data *data = parser->data;
+    char len[32];
+    if (data->act != CHUNK) {
+        sprintf(len, "Content-Length: %d\r\n", (data->act == DOWNLOAD_FILE ? (int)data->st->st_size : (int)strlen(data->body)));
+        strcat(header, len);
+    }
+}
 
+static void header_set_chunked(char *header, http_parser *parser) {
+    Ack_Data *data = parser->data;
+    if (data->act == CHUNK)
+        strcat(header, "Transfer-Encoding: chunked\r\n");
+}
+
+static void header_set_connection(char *header, http_parser *parser) {
+    Ack_Data *data = parser->data;
+    int keep = data->act == DOWNLOAD_FILE || data->act == CHUNK || http_should_keep_alive(parser);
+    strcat(data->header, keep ? "Connection: keep-alive\r\n" : "Connection: Close\r\n");
+}
+
+/***************************************************/
+
+static void path_parse(http_parser *parser) {
+    Ack_Data *data = (Ack_Data *)parser->data;
     data->st = (struct stat *)malloc(sizeof(struct stat));
+    
     if (stat(data->path, data->st) < 0) {
         data->status_code = 404;
         data->status_line = "HTTP/1.1 404 NOT FOUND\r\n";
-        notfound(parser);
+        free(data->body);
+        data->body = HTTP_NotFound();
     }
     else if (!(data->st->st_mode & S_IROTH)) {
         data->status_code = 403;
         data->status_line = "HTTP/1.1 403 FORBIDDEN\r\n";
-        forbidden(parser);
+        free(data->body);
+        data->body = HTTP_Forbidden();
     }
-    else if (S_ISDIR(data->st->st_mode)) {
+    else if (data->act != PUSH_FILE) {
         data->status_code = 200;
         data->status_line = "HTTP/1.1 200 OK\r\n";
-        char buf[1024];
-        DIR *d = opendir(data->path);
-        struct dirent *dir;
-        memset(data->body, 0, BLOCK_SIZE);
-        data->body = strcat(data->body, "<html>\r\n");
-        data->body = strcat(data->body, "<head>\r\n");
-        data->body = strcat(data->body, "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\">\r\n");
-        sprintf(buf, "<title>Directory listing for %s</title>\r\n", data->path+6);
-        data->body = strcat(data->body, buf);
-        data->body = strcat(data->body, "</head>\r\n");
-        data->body = strcat(data->body, "<body>\r\n");
-        sprintf(buf, "<h1>Directory listing for %s</h1>\r\n", data->path+6);
-        data->body = strcat(data->body, buf);
-        data->body = strcat(data->body, "<hr>\r\n");
-        data->body = strcat(data->body, "<ul>\r\n");
-        while ((dir = readdir(d)) != NULL) {
-            if (dir->d_type == DT_DIR) {
-                if (!strcmp(dir->d_name , ".") || !strcmp(dir->d_name, "..")) continue;
-                sprintf(buf, "<li><a href=\"%s/\">%s/</a></li>\r\n", dir->d_name, dir->d_name);
-                data->body = strcat(data->body, buf);
-            }   
-            else if (dir->d_type == DT_REG) {
-                sprintf(buf, "<li><a href=\"%s\">%s</a></li>\r\n", dir->d_name, dir->d_name);
-                data->body = strcat(data->body, buf);
-            }    
-        }
-        closedir(d);
-        data->body = strcat(data->body, "</ul>\r\n");
-        data->body = strcat(data->body, "<hr>\r\n");
-        data->body = strcat(data->body, "</body>\r\n");
-        data->body = strcat(data->body, "</html>\r\n");
-    }
-    else {
-        data->status_code = 200;
-        data->status_line = "HTTP/1.1 200 OK\r\n";
-        
-        if (ischunk(data->path)) {
-            data->load = CHUNK;
-        }
-        else if (data->st->st_size > BLOCK_SIZE) {
-            data->load = DOWNLOAD;
-        }
+        if (S_ISDIR(data->st->st_mode)) {
+            data->act = PULL_DIR;
+            read_directory(parser);
+        } 
+        else if (ischunk(data->path)) 
+            data->act = CHUNK;
+        else if (data->st->st_size > BLOCK_SIZE) 
+            data->act = DOWNLOAD_FILE;
         else {
-            memset(data->body, 0, BLOCK_SIZE);
-            FILE *fp = fopen(data->path, "rb");
-            int size = fread(data->body, 1, BLOCK_SIZE, fp);
-            fclose(fp);
+            read_file(parser);
+            data->act = PULL_FILE;
         }
     }
 }
 
-void notfound(http_parser *parser) {
-    Ack_Data *data = (Ack_Data *)parser->data;
+static void read_directory(http_parser *parser) {
+    Ack_Data *data = parser->data;
+    char buf[1024];
+    DIR *d = opendir(data->path);
+    struct dirent *dir;
+
     memset(data->body, 0, BLOCK_SIZE);
-    data->body = strcat(data->body, "<html>\r\n");
-    data->body = strcat(data->body, "\t<head>\r\n");
-    data->body = strcat(data->body, "\t\t<meta http-equiv=\"Content-Type\" content=\"text/html;charset=utf-8\">\r\n");
-    data->body = strcat(data->body, "\t\t<title>Error response</title>\r\n");
-    data->body = strcat(data->body, "\t</head>\r\n");
-    data->body = strcat(data->body, "\t<body>\r\n");
-    data->body = strcat(data->body, "\t\t<h1>Error response</h1>\r\n");
-    data->body = strcat(data->body, "\t\t<p>Error code: 404</p>\r\n");
-    data->body = strcat(data->body, "\t\t<p>Message: File not found.</p>\r\n");
-    data->body = strcat(data->body, "\t\t<p>Error code explanation: HTTPStatus.NOT_FOUND - Nothing matches the given URI.</p>\r\n");
-    data->body = strcat(data->body, "\t</body>\r\n");
-    data->body = strcat(data->body, "</html>\r\n");
+    strcat(data->body, "<html>\r\n");
+    strcat(data->body, "<head>\r\n");
+    strcat(data->body, "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\">\r\n");
+    sprintf(buf, "<title>Directory listing for %s</title>\r\n", data->path+6);
+    strcat(data->body, buf);
+    strcat(data->body, "</head>\r\n");
+    strcat(data->body, "<body>\r\n");
+    sprintf(buf, "<h1>Directory listing for %s</h1>\r\n", data->path+6);
+    strcat(data->body, buf);
+    strcat(data->body, "<hr>\r\n");
+    strcat(data->body, "<ul>\r\n");
+    
+    while ((dir = readdir(d)) != NULL) {
+        if (!strcmp(dir->d_name , ".") || !strcmp(dir->d_name, "..")) continue;
+        char *ch = dir->d_type == DT_DIR ? "/" : "";
+        sprintf(buf, "<li><a href=\"%s%s\">%s%s</a></li>\r\n", dir->d_name, ch, dir->d_name, ch); 
+        strcat(data->body, buf);
+    }
+    closedir(d);
+    
+    strcat(data->body, "</ul>\r\n");
+    strcat(data->body, "<hr>\r\n");
+    strcat(data->body, "<form action=\"/upload/\" method=\"post\" enctype=\"multipart/form-data\">\r\n");
+    strcat(data->body, "<p><input type=\"file\" name=\"upload\"></p>\r\n");
+    strcat(data->body, "<p><input type=\"submit\" value=\"submit\"></p>\r\n");
+    strcat(data->body, "</form>\r\n");
+    strcat(data->body, "</body>\r\n");
+    strcat(data->body, "</html>\r\n");
 }
 
-void forbidden(http_parser *parser) {
-    Ack_Data *data = (Ack_Data *)parser->data;
+static void read_file(http_parser *parser) {
+    Ack_Data *data = parser->data;
     memset(data->body, 0, BLOCK_SIZE);
-    data->body = strcat(data->body, "<html>\r\n");
-    data->body = strcat(data->body, "\t<head>\r\n");
-    data->body = strcat(data->body, "\t\t<meta http-equiv=\"Content-Type\" content=\"text/html;charset=utf-8\">\r\n");
-    data->body = strcat(data->body, "\t\t<title>Error response</title>\r\n");
-    data->body = strcat(data->body, "\t</head>\r\n");
-    data->body = strcat(data->body, "\t<body>\r\n");
-    data->body = strcat(data->body, "\t\t<h1>Error response</h1>\r\n");
-    data->body = strcat(data->body, "\t\t<p>Error code: 403</p>\r\n");
-    data->body = strcat(data->body, "\t\t<p>Message: Forbidden.</p>\r\n");
-    data->body = strcat(data->body, "\t\t<p>Error code explanation: HTTPStatus.Forbidden.</p>\r\n");
-    data->body = strcat(data->body, "\t</body>\r\n");
-    data->body = strcat(data->body, "</html>\r\n");
+    FILE *fp = fopen(data->path, "rb");
+    int size = fread(data->body, 1, BLOCK_SIZE, fp);
+    fclose(fp);    
 }
 
+static void post_file(http_parser *parser) {
+    Ack_Data *data = parser->data;
+    FILE *fp = fopen(data->filename, "a");
+
+    int len = strlen(data->boundary);
+    char *boundary_end = malloc(len + 3);
+    strcpy(boundary_end, data->boundary);
+    strcat(boundary_end, "--");
+    char *end = strstr(data->body, boundary_end);
+
+    char *bbegin = strstr(data->body, data->boundary);
+    while (bbegin && bbegin != end) {
+        char *dbegin = strstr(bbegin, "\r\n\r\n") + 4;
+        char *bend = strstr(dbegin, data->boundary);
+        fwrite(dbegin, 1, (int)(bend - dbegin - 2), fp);
+        bbegin = bend;
+    }
+    
+    fclose(fp);
+    
+    data->status_code = 200;
+    data->status_line = "HTTP/1.1 200 OK\r\n";
+    read_directory(parser);
+    mkheader(parser);    
+}
+
+/***************************************************/
 int http_upload(http_parser *parser) {
     Ack_Data *data = (Ack_Data *)parser->data;
-    if (!data->fp)
-        data->fp = fopen(data->path, "a");
+    if (!data->fp) data->fp = fopen(data->filename, "a");
+    int len = strlen(data->boundary);
+    char *boundary_end = malloc(len + 3);
+    strcpy(boundary_end, data->boundary);
+    strcat(boundary_end, "--");
+    char *end = strstr(data->body, boundary_end);
 
-    int size = fwrite(data->body, 1, strlen(data->body), data->fp);
+    char *bbegin = strstr(data->body, data->boundary);
+    while (bbegin && bbegin != end) {
+        char *dbegin = strstr(bbegin, "\r\n\r\n") + 4;
+        char *bend = strstr(dbegin, data->boundary);
+        fwrite(dbegin, 1, (int)(bend - dbegin - 2), data->fp);
+        bbegin = bend;
+    }
     
-    data->content_length -= size;
-    mkheader(parser);
-
-    if (data->content_length <= 0 
-        || (data->load == CHUNK) && strstr(data->body, "0\r\n\r\n")) {
-        return 1;
+    if (end) {
+        fclose(data->fp);
+        data->status_code = 200;
+        data->status_line = "HTTP/1.1 200 OK\r\n";
+        path_parse(parser);
+        mkheader(parser);
+        return 1;            
     }
     return 0;
 }
 
 int http_download(http_parser *parser) {
     Ack_Data *data = (Ack_Data *)parser->data;
-    if (!data->fp)
-        data->fp = fopen(data->path, "rb");
+    if (!data->fp) data->fp = fopen(data->path, "rb");
     memset(data->body, 0, BLOCK_SIZE);
     fread(data->body, 1, BLOCK_SIZE, data->fp);
     
@@ -322,13 +345,10 @@ int http_download(http_parser *parser) {
 
 int http_chunk(http_parser *parser) {
     Ack_Data *data = (Ack_Data *)parser->data;
-    
-    if (data->fd == -1)
-        data->fd = open(data->path, O_RDONLY);
-        
+    if (data->fd == -1) data->fd = open(data->path, O_RDONLY);
+
     memset(data->body, 0, BLOCK_SIZE);
     // int size = read(data->fd, data->body, BLOCK_SIZE);
-    
     int size = read(data->fd, data->body, 10);
     
     if (strstr(data->body, "0\r\n\r\n") || size == 0) {
@@ -339,8 +359,5 @@ int http_chunk(http_parser *parser) {
 }
 
 int ischunk(char *path) {
-    if (strstr(path, "dynamic")) {
-        return 1;
-    }
-    else return 0;
+    return strstr(path, "dynamic") != NULL;
 }

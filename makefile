@@ -10,7 +10,7 @@ endif
 ALL : bin/server bin/http_client bin/https_client
 .PHONY : ALL
 
-bin/server : obj/server.o obj/sthread.o obj/parser.o
+bin/server : obj/server.o obj/sthread.o obj/parser.o obj/html.o
 	$(CC) -o $@ $^ $(CCFLAGS)
 
 bin/http_client : obj/http_client.o

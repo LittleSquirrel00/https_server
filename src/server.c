@@ -210,12 +210,13 @@ static void http_chunk_cb(evutil_socket_t fd, short events, void *arg) {
     }
 }
 
+/// TODO: test
 static void io_upload_cb(evutil_socket_t fd, short events, void *arg) {
     Thread_Argv *argv = (Thread_Argv *)arg;
     struct bufferevent *bev = argv->bev;
     http_parser *parser = argv->parser;
     Ack_Data *data = (Ack_Data *)parser->data;
-    
+    printf("io\n");
     struct evbuffer *input = bufferevent_get_input(bev);
     int len = evbuffer_get_length(input);
     if (len > 0) {
@@ -265,7 +266,7 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
     char *msg = (char *)malloc((len + 1) * sizeof(char));
     memset(msg, 0, (len + 1) * sizeof(char));
     int size = evbuffer_remove(input, msg, len);
-
+    printf("%s\n", msg);
     // HTTP解析
     http_parser_settings parser_set;
     http_parser_settings_init(&parser_set);
@@ -298,7 +299,7 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
     if (strlen(data->body)) evbuffer_add_printf(output, "%s", data->body);  
     bufferevent_write_buffer(bev, output);
 
-    if (data->load == DOWNLOAD) {
+    if (data->act == DOWNLOAD_FILE) {
         Thread_Argv *argv = (Thread_Argv *)malloc(sizeof(Thread_Argv));
         argv->bev = bev;
         argv->parser = parser;
@@ -315,7 +316,7 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
         evtimer_add(io_event, &tv);
         argv->ev = io_event;
     }
-    else if (data->load == CHUNK) {
+    else if (data->act == CHUNK) {
         Thread_Argv *argv = (Thread_Argv *)malloc(sizeof(Thread_Argv));
         argv->parser = parser;
         argv->bev = bev;
@@ -330,7 +331,7 @@ static void read_cb(struct bufferevent *bev, void *ctx) {
         evtimer_add(timer, &tv);
         argv->ev = timer;
     }
-    else if (data->load == UPLOAD) {
+    else if (data->act == UPLOAD_FILE) {
         Thread_Argv *argv = (Thread_Argv *)malloc(sizeof(Thread_Argv));
         argv->bev = bev;
         argv->parser = parser;
