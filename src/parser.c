@@ -13,12 +13,6 @@
 
 /***************************************************/
 int on_message_begin(http_parser *parser) {
-    Ack_Data *data = parser->data;
-    data->act = UNACTION;
-    data_init(parser->data);
-    data->content_length = IUNSET;
-    data->fd = -1;
-    data->status_code = 200;
     return 0;
 }
 
@@ -61,6 +55,7 @@ int on_header_value(http_parser *parser, const char *at, size_t length) {
             begin += 9;
             data->boundary = (char *)malloc(BUFFER_SIZE);
             sprintf(data->boundary, "%.*s", (int)(at + length - begin), begin);
+            data->act = PUSH_FILE;
         }
     }
     else if (data->content_length == ISET) {
@@ -75,43 +70,63 @@ int on_header_value(http_parser *parser, const char *at, size_t length) {
     return 0;
 }
 
-int on_body(http_parser *parser, const char *at, size_t length) {
+int on_headers_complete(http_parser *parser) {
+    printf("***HEADERS COMPLETE***\n\n");
     Ack_Data *data = (Ack_Data *)parser->data;
     if (!data->boundary) {
         path_parse(parser);
         mkheader(parser);
     }
-    else {
-        sprintf(data->body, "%.*s", (int)length, at);
+    data->read_body_cnt = 0;
+    return 0;
+}
 
-        char *fbegin = strstr(data->body, "filename=") + 10;
-        char *fend = strstr(fbegin, "\"");
-        data->filename = malloc(128);
-        strcpy(data->filename, data->path);
-        strncat(data->filename, fbegin, (int)(fend - fbegin));
-        path_parse(parser);
-        if (data->status_code != 200) {
-            mkheader(parser);
-            data->act = ERROR;
+int on_body(http_parser *parser, const char *at, size_t length) {
+    printf("***BODY***\n\n");
+    Ack_Data *data = (Ack_Data *)parser->data;
+    data->read_body_cnt = length;
+    sprintf(data->body, "%.*s", (int)length, at);
+    
+    char *fbegin = strstr(data->body, "filename=") + 10;
+    char *fend = strstr(fbegin, "\"");
+    data->filename = malloc(128);
+    strcpy(data->filename, data->path);
+    strncat(data->filename, fbegin, (int)(fend - fbegin));
+
+    data->act = PUSH_FILE;
+    path_parse(parser);
+    
+    if (data->status_code != 200) {
+        mkheader(parser);
+        data->act = ERROR;
+    }
+    else {
+        if (length <= data->content_length) {
+            post_file(parser);
         }
         else {
-            if (length <= data->content_length) {
-                data->act = PUSH_FILE;
-                post_file(parser);
-            }
-            else {
-                data->act = UPLOAD_FILE;
-            }
+            data->act = UPLOAD_FILE;
         }
     }
     return 0;
 }
 
+int on_message_complete(http_parser *parser) {
+}
+
 /***************************************************/
-void data_init(Ack_Data *data) {
+Ack_Data *data_init(Ack_Data *data) {
+    data = malloc(sizeof(Ack_Data));
+    memset(data, 0, sizeof(Ack_Data));
     data->header = malloc(HEADER_SIZE);
     data->body = malloc(BLOCK_SIZE);
     data->path = malloc(URL_SIZE);
+
+    data->content_length = IUNSET;
+    data->fd = -1;
+    data->status_code = 200;
+    data->act = UNACTION;
+    return data;
 }
 
 void data_free(Ack_Data *data) {
@@ -215,6 +230,7 @@ static void path_parse(http_parser *parser) {
     else if (data->act != PUSH_FILE) {
         data->status_code = 200;
         data->status_line = "HTTP/1.1 200 OK\r\n";
+        
         if (S_ISDIR(data->st->st_mode)) {
             data->act = PULL_DIR;
             read_directory(parser);
@@ -277,34 +293,33 @@ static void read_file(http_parser *parser) {
 
 static void post_file(http_parser *parser) {
     Ack_Data *data = parser->data;
-    FILE *fp = fopen(data->filename, "a");
+    FILE *fp = fopen(data->filename, "w");
 
     int len = strlen(data->boundary);
     char *boundary_end = malloc(len + 3);
     strcpy(boundary_end, data->boundary);
     strcat(boundary_end, "--");
     char *end = strstr(data->body, boundary_end);
-
     char *bbegin = strstr(data->body, data->boundary);
+
     while (bbegin && bbegin != end) {
         char *dbegin = strstr(bbegin, "\r\n\r\n") + 4;
         char *bend = strstr(dbegin, data->boundary);
         fwrite(dbegin, 1, (int)(bend - dbegin - 2), fp);
         bbegin = bend;
     }
-    
     fclose(fp);
     
     data->status_code = 200;
     data->status_line = "HTTP/1.1 200 OK\r\n";
     read_directory(parser);
-    mkheader(parser);    
+    mkheader(parser);
 }
 
 /***************************************************/
 int http_upload(http_parser *parser) {
     Ack_Data *data = (Ack_Data *)parser->data;
-    if (!data->fp) data->fp = fopen(data->filename, "a");
+    if (!data->fp) data->fp = fopen(data->filename, "w");
     int len = strlen(data->boundary);
     char *boundary_end = malloc(len + 3);
     strcpy(boundary_end, data->boundary);
@@ -360,4 +375,9 @@ int http_chunk(http_parser *parser) {
 
 int ischunk(char *path) {
     return strstr(path, "dynamic") != NULL;
+}
+
+int http_body_final(http_parser *parser) {
+    Ack_Data *data = parser->data;
+    return data->content_length <= data->read_body_cnt;
 }

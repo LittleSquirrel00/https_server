@@ -26,6 +26,8 @@ typedef struct {
 typedef struct {
     struct bufferevent *bev;
     http_parser *parser;
+    int accept_new_http_pkt;
+    int http_final;
     struct event *ev;
     struct timeval tv;
     int cnt;
