@@ -46,4 +46,8 @@
 > - run server locally, visit https://127.0.0.1:443 or http://127.0.0.1:8080
 > - run server in docker, visit https://docker_ip:docker_443_port or http://docker_ip:docker_8080_port
 
-# Flow
+# Server framework
+![server framework](https://github.com/LittleSquirrel00/https_server/blob/master/doc/%E6%9C%8D%E5%8A%A1%E5%99%A8%E7%BB%93%E6%9E%84.png)
+
+# Flow chart
+![flow chart](https://github.com/LittleSquirrel00/https_server/blob/master/doc/%E6%9C%8D%E5%8A%A1%E5%99%A8%E6%B5%81%E7%A8%8B.png)
