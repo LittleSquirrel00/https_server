@@ -71,7 +71,6 @@ int on_header_value(http_parser *parser, const char *at, size_t length) {
 }
 
 int on_headers_complete(http_parser *parser) {
-    printf("***HEADERS COMPLETE***\n\n");
     Ack_Data *data = (Ack_Data *)parser->data;
     if (!data->boundary) {
         path_parse(parser);
@@ -82,7 +81,6 @@ int on_headers_complete(http_parser *parser) {
 }
 
 int on_body(http_parser *parser, const char *at, size_t length) {
-    printf("***BODY***\n\n");
     Ack_Data *data = (Ack_Data *)parser->data;
     data->read_body_cnt = length;
     sprintf(data->body, "%.*s", (int)length, at);
@@ -111,9 +109,6 @@ int on_body(http_parser *parser, const char *at, size_t length) {
     return 0;
 }
 
-int on_message_complete(http_parser *parser) {
-}
-
 /***************************************************/
 Ack_Data *data_init(Ack_Data *data) {
     data = malloc(sizeof(Ack_Data));
@@ -133,6 +128,7 @@ void data_free(Ack_Data *data) {
     free(data->header);
     free(data->body);
     free(data->path);
+    free(data);
 }
 
 void mkheader(http_parser *parser) {
@@ -347,11 +343,10 @@ int http_upload(http_parser *parser) {
 
 int http_download(http_parser *parser) {
     Ack_Data *data = (Ack_Data *)parser->data;
-    if (!data->fp) data->fp = fopen(data->path, "rb");
+    if (!data->fp) data->fp = fopen(data->path, "r");
     memset(data->body, 0, BLOCK_SIZE);
-    fread(data->body, 1, BLOCK_SIZE, data->fp);
     
-    if (feof(data->fp)) {
+    if (!fread(data->body, 1, BLOCK_SIZE, data->fp)) {
         fclose(data->fp);
         return 1;
     }
@@ -360,14 +355,10 @@ int http_download(http_parser *parser) {
 
 int http_chunk(http_parser *parser) {
     Ack_Data *data = (Ack_Data *)parser->data;
-    if (data->fd == -1) data->fd = open(data->path, O_RDONLY);
-
+    if (!data->fp) data->fp = fopen(data->path, "r");
     memset(data->body, 0, BLOCK_SIZE);
-    // int size = read(data->fd, data->body, BLOCK_SIZE);
-    int size = read(data->fd, data->body, 10);
-    
-    if (strstr(data->body, "0\r\n\r\n") || size == 0) {
-        close(data->fd);
+    if (!fgets(data->body, BLOCK_SIZE, data->fp)) {
+        fclose(data->fp);
         return 1;
     }
     return 0;
@@ -375,6 +366,11 @@ int http_chunk(http_parser *parser) {
 
 int ischunk(char *path) {
     return strstr(path, "dynamic") != NULL;
+}
+
+int need_thread(http_parser *parser) {
+    Ack_Data *data = parser->data;
+    return data->act == DOWNLOAD_FILE || data->act == CHUNK;
 }
 
 int http_body_final(http_parser *parser) {

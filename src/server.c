@@ -150,7 +150,6 @@ static void http_accept_cb(struct evconnlistener *listener, evutil_socket_t fd, 
     Thread_Argv *argv = malloc(sizeof(Thread_Argv));
     argv->cnt = 1;
     argv->accept_new_http_pkt = 1;
-    argv->http_final = 1;
     bufferevent_setcb(bev, read_cb, NULL, event_cb, argv);
     bufferevent_enable(bev, EV_READ|EV_WRITE|EV_PERSIST);
 }
@@ -172,7 +171,6 @@ static void https_accept_cb(struct evconnlistener *listener, evutil_socket_t fd,
     Thread_Argv *argv = malloc(sizeof(Thread_Argv));
     argv->cnt = 1;
     argv->accept_new_http_pkt = 1;
-    argv->http_final = 1;
     bufferevent_setcb(bev, read_cb, NULL, event_cb, argv);
     bufferevent_enable(bev, EV_READ|EV_WRITE|EV_PERSIST);
 }
@@ -185,22 +183,23 @@ static void accept_error_cb(struct evconnlistener *listener, void *ctx) {
     event_base_loopexit(base, NULL);
 }
 
-/// TODO: bug to solve
 static void http_chunk_cb(evutil_socket_t fd, short events, void *arg) {
     Thread_Argv *argv = (Thread_Argv *)arg;
     struct bufferevent *bev = argv->bev;
     http_parser *parser = argv->parser;
     Ack_Data *data = (Ack_Data *)parser->data;
-    
+
     int finish = http_chunk(parser);
-
     struct evbuffer *output = bufferevent_get_output(bev);
-    evbuffer_add_printf(output, "%s", data->body);  
+    /// TODO:bug
+    // evbuffer_add_printf(output, "%d\r\n%s\r\n", (int)strlen(data->body), data->body);
     bufferevent_write_buffer(bev, output);
-
+ 
     if (finish) {
+        evbuffer_add_printf(output, "0\r\n\r\n");  
+        bufferevent_write_buffer(bev, output);
+
         data_free(data);
-        free(data);
         free(parser);
         free(arg);
         event_del(argv->ev);
@@ -214,14 +213,12 @@ static void io_download_cb(evutil_socket_t fd, short events, void *arg) {
     Ack_Data *data = (Ack_Data *)parser->data;
     
     int finish = http_download(parser);
-
     struct evbuffer *output = bufferevent_get_output(bev);
     evbuffer_add_printf(output, "%s", data->body);  
     bufferevent_write_buffer(bev, output);
 
     if (finish) {
         data_free(data);
-        free(data);
         free(parser);
         free(arg);
         event_del(argv->ev);
@@ -268,10 +265,9 @@ static void read_cb(struct bufferevent *bev, void *arg) {
         parser_len = http_parser_execute(parser, &parser_set, msg, len);
     }
 
-    if (parser_len != len) {  
-        printf("%d, %d\n", parser_len, len);
+    if (parser_len != len) {
         free(msg);
-        free(data);
+        data_free(data);
         free(parser);
         bufferevent_disable(bev, EV_READ|EV_WRITE);
         bufferevent_free(bev);
@@ -284,48 +280,33 @@ static void read_cb(struct bufferevent *bev, void *arg) {
         if (strlen(data->body)) evbuffer_add_printf(output, "%s", data->body);  
         bufferevent_write_buffer(bev, output);
     }
-    if (data->act == DOWNLOAD_FILE) {
-        Thread_Argv *argv = (Thread_Argv *)malloc(sizeof(Thread_Argv));
-        argv->bev = bev;
-        argv->parser = parser;
-        argv->cnt = 1;
-
-        struct event_base *base = io_threads[io_thread_index].base;
-        io_thread_index = (io_thread_index + 1) % IO_THREAD_NUMS;
-        struct event * io_event = event_new(base, -1, EV_TIMEOUT|EV_PERSIST, io_download_cb, argv);
-        io_threads[io_thread_index].io_event = io_event;
-
-        struct timeval tv;
-        evutil_timerclear(&tv);
-        tv.tv_usec = 100;
-        evtimer_add(io_event, &tv);
-        argv->ev = io_event;
-    }
-    else if (data->act == CHUNK) {
-        Thread_Argv *argv = (Thread_Argv *)malloc(sizeof(Thread_Argv));
-        argv->parser = parser;
-        argv->bev = bev;
-        argv->cnt = 1;
-
-        struct event_base *base = bufferevent_get_base(bev);
-        struct event *timer = event_new(base, -1, EV_TIMEOUT|EV_PERSIST, http_chunk_cb, argv);
-        
-        struct timeval tv;
-        evutil_timerclear(&tv);
-        tv.tv_usec = 100 * 1000;
-        evtimer_add(timer, &tv);
-        argv->ev = timer;
-    }
-    else if (data->act == UPLOAD_FILE || data->content_length > data->read_body_cnt) {
-
-    }
-
-    if (!http_body_final(parser)) {
+    else {
         argvs->accept_new_http_pkt = 0;
         argvs->parser = parser;
     }
-    else if (!http_should_keep_alive(parser)) {
-        bufferevent_disable(bev, EV_READ|EV_WRITE);
+
+    if (need_thread(parser)) {
+        Thread_Argv *argv = (Thread_Argv *)malloc(sizeof(Thread_Argv));
+        argv->parser = parser;
+        argv->bev = bev;
+        argv->cnt = 1;
+        
+        struct event_base *base = io_threads[io_thread_index].base;
+        io_thread_index = (io_thread_index + 1) % IO_THREAD_NUMS;
+        struct event *io_event;
+        if (data->act == DOWNLOAD_FILE)
+            io_event = event_new(base, -1, EV_TIMEOUT|EV_PERSIST, io_download_cb, argv);
+        else
+            io_event = event_new(base, -1, EV_TIMEOUT|EV_PERSIST, http_chunk_cb, argv);
+        io_threads[io_thread_index].io_event = io_event;
+        
+        struct timeval tv;
+        evutil_timerclear(&tv);
+        tv.tv_usec =  1000;
+        evtimer_add(io_event, &tv);
+        argv->ev = io_event;
+    }
+    else if (http_body_final(parser) && !http_should_keep_alive(parser)) {
         bufferevent_free(bev);
     }
 }

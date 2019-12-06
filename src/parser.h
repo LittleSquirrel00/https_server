@@ -18,7 +18,7 @@ typedef enum {UNACTION, PULL_DIR, PULL_FILE, PUSH_FILE, UPLOAD_FILE, DOWNLOAD_FI
 #define URL_SIZE 256
 #define BUFFER_SIZE 512
 #define HEADER_SIZE 1024
-#define BLOCK_SIZE 256 * 1024
+#define BLOCK_SIZE 4 * 1024
 
 typedef struct {
     char *status_line;
@@ -105,5 +105,7 @@ static void header_set_connection(char *header, http_parser *parser);
 static int ischunk(char *path);
 
 int http_body_final(http_parser *parser);
+
+int need_thread(http_parser *parser);
 
 #endif
