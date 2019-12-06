@@ -250,7 +250,6 @@ static void read_cb(struct bufferevent *bev, void *arg) {
         parser->data = data;
         data->home = HOME_DIR;
 
-        parser_set.on_message_begin = on_message_begin;
         parser_set.on_url = on_url;
         parser_set.on_header_field = on_header_field;
         parser_set.on_header_value = on_header_value;
